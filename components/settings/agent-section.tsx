@@ -105,7 +105,8 @@ interface SegmentInfo {
 	shared: boolean;
 }
 
-type PromptView = Record<"teacher" | "prober" | "practice", SegmentInfo[]>;
+/** Infinite is optional so a reply from a build without it still renders. */
+type PromptView = Record<"teacher" | "prober" | "practice", SegmentInfo[]> & { infinite?: SegmentInfo[] };
 type PromptRow = SegmentInfo & { usageHint?: string };
 
 /** Compose: one tool toggled, the rest of the section carried verbatim.
@@ -117,6 +118,15 @@ export function composeTool(agent: AgentSettings | undefined, id: string, on: bo
 /** A file-access folder entry the server will accept: absolute (POSIX or
  *  Windows drive/UNC) or "~"-anchored. Pure — exported for tests. */
 export function isFolderEntry(folder: string): boolean { return isFileAccessFolder(folder); }
+
+/** Compose: the workspace folder. A valid entry is stored trimmed; an
+ *  empty one clears the choice; an invalid one is a no-op. Pure — tests. */
+export function composeWorkspacePath(agent: AgentSettings | undefined, folder: string): AgentSettings {
+	const next = folder.trim();
+	if (!next) return { ...agent, workspace: {} };
+	if (!isFolderEntry(next)) return { ...agent };
+	return { ...agent, workspace: { path: next } };
+}
 
 /** The switch changes ONLY restriction, never discards saved folders. */
 export function composeFileRestriction(agent: AgentSettings | undefined, restricted: boolean): AgentSettings {
@@ -254,24 +264,25 @@ export interface PromptSection {
  *  second copy of the runtime's Practice shared-fragment allowlist.
  *  Pure — exported for tests. */
 export function sectionedSegments(view: PromptView): PromptSection[] {
-	const agents = [
+	const agents = ([
 		{ id: "teacher", label: "Teacher" },
 		{ id: "prober", label: "Prober" },
 		{ id: "practice", label: "Practice" },
-	] as const;
+		{ id: "infinite", label: "Infinite" },
+	] as const).filter(({ id }) => view[id] !== undefined);
 	const shared = new Map<string, SegmentInfo>();
 	for (const { id } of agents) {
-		for (const segment of view[id]) {
+		for (const segment of view[id] ?? []) {
 			if (segment.shared && !shared.has(segment.path)) shared.set(segment.path, segment);
 		}
 	}
 	return [
-		...agents.map(({ id, label }) => ({ id, label, segments: view[id].filter((s) => !s.shared) })),
+		...agents.map(({ id, label }) => ({ id, label, segments: (view[id] ?? []).filter((s) => !s.shared) })),
 		{
 			id: "shared",
 			label: "Shared",
 			segments: [...shared.values()].map((segment) => {
-				const users = agents.filter(({ id }) => view[id].some((s) => s.path === segment.path)).map(({ label }) => label);
+				const users = agents.filter(({ id }) => (view[id] ?? []).some((s) => s.path === segment.path)).map(({ label }) => label);
 				const usage = users.length > 1 ? `${users.slice(0, -1).join(", ")} and ${users.at(-1)}` : users[0];
 				return { ...segment, usageHint: `Used by ${usage}` };
 			}),
@@ -374,6 +385,9 @@ export function AgentSection({
 	/** The live search state (/api/search) — the row's reason line. */
 	const [folderInput, setFolderInput] = useState("");
 	const [folderError, setFolderError] = useState<string | null>(null);
+	// The workspace-folder draft: null = showing the saved value untouched.
+	const [workspaceDraft, setWorkspaceDraft] = useState<string | null>(null);
+	const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 	const [search, setSearch] = useState<{ available: boolean; engine: string | null; reason: string } | null>(null);
 	/** Which search engines have a key (/api/keys) — the no-keys-anywhere
 	 *  state grays the row; per-engine marks ride the menu rows. */
@@ -906,6 +920,35 @@ export function AgentSection({
 						/>
 					</SettingsRow>
 				))}
+				{(() => {
+					const saved = agent?.workspace?.path ?? "";
+					const value = workspaceDraft ?? saved;
+					const dirty = workspaceDraft !== null && workspaceDraft.trim() !== saved;
+					const save = () => {
+						const next = value.trim();
+						if (next && !isFolderEntry(next)) { setWorkspaceError("Enter an absolute path or ~/folder."); return; }
+						onSectionChange(composeWorkspacePath(agent, next));
+						setWorkspaceDraft(null);
+						setWorkspaceError(null);
+					};
+					return (
+						<div data-testid="workspace-row" className="flex flex-col gap-2">
+							<SettingsRow label="Workspace folder" hint={saved
+								? "Every new chat gets its own folder here. The agent can read, write and run commands in it."
+								: "Required. Choose a folder on your disk; every new chat gets its own folder inside it."}>
+								<span />
+							</SettingsRow>
+							<div className="flex gap-2 pl-3">
+								<input value={value} aria-label="Workspace folder path" data-testid="workspace-path" placeholder="Absolute path or ~/folder"
+									onChange={(event) => { setWorkspaceDraft(event.target.value); setWorkspaceError(null); }}
+									onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); save(); } }}
+									className="min-w-0 flex-1 rounded-sm border border-border bg-background px-2 py-1 font-ui text-xs" />
+								<button type="button" data-testid="workspace-save" disabled={!dirty} onClick={save} className="rounded-sm border border-border px-2 text-xs disabled:opacity-40">Save</button>
+							</div>
+							{workspaceError && <p role="alert" data-testid="workspace-input-error" className="pl-3 text-xs text-error">{workspaceError}</p>}
+						</div>
+					);
+				})()}
 				{(() => {
 					const folders = agent?.fileAccess?.folders ?? [];
 					const restricted = Boolean(fileAccessError) || agent?.fileAccess?.restricted === true;

@@ -15,8 +15,19 @@ import type { EmissionStats } from "./graph.ts";
 
 /** Session kind: teach is the default when a saved record omits kind.
  * Practice uses the adaptive-practice agent without teaching extraction or
- * graph writes. Reading an absent kind does not require a record migration. */
-export type ChatKind = "teach" | "practice";
+ * graph writes. Infinite is an endless run of coding challenges toward an
+ * agreed target; it runs the practice machinery under its own prompts, and
+ * plugin learning-data reads report it as practice. Reading an absent kind
+ * does not require a record migration. */
+export type ChatKind = "teach" | "practice" | "infinite";
+
+/** Infinite sessions run on the practice machinery (one problem at a time,
+ * the same pose/conclude tools, no extraction) under their own prompts.
+ * Every "is this a practice-style session" decision reads this, so the two
+ * kinds cannot drift apart. */
+export function isPracticeLike(kind: string | undefined): boolean {
+	return kind === "practice" || kind === "infinite";
+}
 
 /** One persisted native session under data/chats/<id>.json. Messages retain
  * native agent history; transcript rendering groups them into a separate view.
@@ -31,6 +42,10 @@ export interface ChatRecord {
 	imageSnapshots?: Record<string, ImageSnapshot>;
 	/** The session's kind; an absent field reads as teach. */
 	kind?: ChatKind;
+	/** Absolute path of this chat's own folder under the learner's workspace
+	 * folder, created at chat birth. Absent on chats born before workspaces
+	 * existed: those have no folder, no workspace tools and no open control. */
+	workspaceDir?: string;
 	/** The session's plan tree, written by the native plan tools. */
 	tree?: PlanTree;
 	/** Append-only usage log, separate from message history: one entry per billed

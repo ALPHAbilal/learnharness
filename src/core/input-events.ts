@@ -32,6 +32,7 @@ import type { QuestionAnswerData } from "./question-core.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { validatePluginSubmissionImageArray, validatePluginSubmissionImages, type PluginSubmissionImages, type PluginSubmissionOccurrence } from "./plugin-submissions.ts";
 import type { LhMessage } from "./native-messages.ts";
+import { isPracticeLike } from "./contracts/chat.ts";
 import {
 	activeProblemOf,
 	activeProblemOccurrenceOf,
@@ -337,7 +338,7 @@ export function inputAppends(
 			// between-problems affordance — practice sessions only, nothing
 			// active (mid-problem input rides the dock), and the client gates
 			// make violations unreachable in practice anyway.
-			if (record.kind !== "practice") {
+			if (!isPracticeLike(record.kind)) {
 				throw new ChatInputError("next input is a practice-session affordance");
 			}
 			if (activeProblemOf(record.messages)) {

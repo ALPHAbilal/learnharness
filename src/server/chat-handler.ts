@@ -1,6 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import {
 	createPracticeAgent,
+	createInfiniteAgent,
 	createProberAgent,
 	createTeacherAgent,
 	type AgentBuildOptions,
@@ -55,6 +56,7 @@ import { sideChats, type SideChatService } from "./side-chat.ts";
 import { SIDE_CONTEXT_BUDGET_ERROR, sideBudgetRetryDrops, sideContextWindow } from "./side-context-budget.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
+import { isPracticeLike } from "../core/contracts/chat.ts";
 import { hasProbeDone, hasUnresolvedQuestion, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf } from "../core/native-messages.ts";
 import { samePluginQuestionOccurrence } from "../core/plugin-questions.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
@@ -364,7 +366,7 @@ export async function handleChatInput(
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
 	const contextWindow = catalogContextLimits().get(modelIdForCompaction);
 	const thresholdTokens = effectiveThresholdTokens(effective.compaction?.thresholdTokens, contextWindow);
-	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : "teacher").length / 4);
+	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "infinite" ? "infinite" : record.kind === "practice" ? "practice" : "teacher").length / 4);
 	const estimateModel = effective.compaction.includeReasoning ? conversationEngine.model : undefined;
 	const fitsSideContext = (messages: readonly LhMessage[]) => {
 		const live = messages.filter((message) => (message as { role: string }).role !== "system");
@@ -389,7 +391,7 @@ export async function handleChatInput(
 			engine: compactionEngine,
 			canStart: () => !isTurnRunning(chatId) && connectionBackgroundAllowed(conversation.provider),
 			modelId: modelIdForCompaction,
-			kind: record.kind === "practice" ? "practice" : hasProbeDone(record.messages) ? "teach" : "probe",
+			kind: isPracticeLike(record.kind) ? "practice" : hasProbeDone(record.messages) ? "teach" : "probe",
 			includeReasoning: effective.compaction.includeReasoning,
 			thresholdTokens,
 			systemPromptTokens,
@@ -725,6 +727,10 @@ export async function handleChatInput(
 		// point as the tool delta — the agent layer composes the system
 		// prompt fresh per turn, swapping in any enabled override segments.
 		promptSwitches: effective.agent.prompts,
+		// WORKSPACES: the chat's own folder, stamped at birth. Present →
+		// the teacher/practice/infinite agents gain run_command + write_file.
+		// Chats born before workspaces have none and run exactly as before.
+		workspaceDir: record.workspaceDir,
 	};
 	// PRACTICE BRANCH (owner design, 2026-10-04): a kind:"practice"
 	// session builds the practitioner from turn 1 — no prober→teacher
@@ -733,8 +739,9 @@ export async function handleChatInput(
 	// uniform across kinds).
 	const constructed: TeachingAgent = buildAgent
 		? buildAgent({ ...agentOpts, teaching })
-		: record.kind === "practice"
-			? createPracticeAgent(
+		: isPracticeLike(record.kind)
+			// INFINITE rides the practice registry under its own prompts.
+			? (record.kind === "infinite" ? createInfiniteAgent : createPracticeAgent)(
 					{
 						chatId,
 						chatStore: stores.chatStore,
@@ -884,7 +891,7 @@ export async function handleChatInput(
 				// PRACTICE (owner, 2026-10-04): practice sessions write nothing —
 				// no extraction, no graph, no coverage (v1: the session itself
 				// is the deliverable).
-				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && extractionEnabled(effective.graph)) {
+				if ((!requestCycle || requestCycle.dispatched) && !isPracticeLike(record.kind) && extractionEnabled(effective.graph)) {
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
@@ -937,13 +944,13 @@ export async function handleChatInput(
 							engine: kickEngine,
 							canStart: () => !isTurnRunning(chatId) && connectionBackgroundAllowed(spec.provider),
 							modelId: kickModelId,
-							kind: freshRecord.kind === "practice" ? "practice" : hasProbeDone(freshRecord.messages) ? "teach" : "probe",
+							kind: isPracticeLike(freshRecord.kind) ? "practice" : hasProbeDone(freshRecord.messages) ? "teach" : "probe",
 							includeReasoning: fresh.compaction.includeReasoning,
 							thresholdTokens: effectiveThresholdTokens(
 								fresh.compaction?.thresholdTokens,
 								catalogContextLimits().get(kickModelId),
 							),
-							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher").length / 4),
+							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "infinite" ? "infinite" : freshRecord.kind === "practice" ? "practice" : "teacher").length / 4),
 						};
 					}, chatId);
 			},

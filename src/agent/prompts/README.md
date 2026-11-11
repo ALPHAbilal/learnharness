@@ -1,6 +1,6 @@
 # Prompt composition
 
-The runtime composes prompts for **prober**, **teacher** and **practice** agents. The source of truth is [`listSourceSegments` / `effectivePromptSegments`](../prompt-segments.ts); [`composeInstructions`](../teacher-agent.ts) selects effective text, trims each segment, drops empty segments and joins them with `\n\n---\n\n`. Non-fragment documentation such as this README never enters the prompt.
+The runtime composes prompts for **prober**, **teacher**, **practice** and **infinite** agents. The source of truth is [`listSourceSegments` / `effectivePromptSegments`](../prompt-segments.ts); [`composeInstructions`](../teacher-agent.ts) selects effective text, trims each segment, drops empty segments and joins them with `\n\n---\n\n`. Non-fragment documentation such as this README never enters the prompt.
 
 ## Composition order
 
@@ -9,6 +9,7 @@ The runtime composes prompts for **prober**, **teacher** and **practice** agents
 | Prober | [`system-prompt.md`](../system-prompt.md) → sorted `prober/` fragments → sorted `shared/` fragments |
 | Teacher | `system-prompt.md` → sorted `teacher/` fragments → sorted `shared/` fragments |
 | Practice | sorted `practice/` fragments → the curated shared appendix below; **no teaching base** |
+| Infinite | sorted `infinite/` fragments → the same curated shared appendix as practice; **no teaching base** |
 | Side questions | [`side-chat/00-base.md`](side-chat/00-base.md) → shared `10-voice.md`, `15-accuracy.md`, `40-formatting.md` → final side-only [`90-style.md`](side-chat/90-style.md); composed by [`src/agent/side-chat.ts`](../side-chat.ts), not by the segment loader |
 
 Directory discovery accepts only filenames matching `^\d+-[\w.-]+\.md$` and sorts them lexicographically by filename. Keep numeric prefixes consistently padded when order matters. The teaching base supplies the agent's purpose/philosophy; voice, accuracy, mental-model, question, confidence, file and formatting guidance are separate shared fragments. The teacher's method and planning/teaching doctrine live in its own directory; probing doctrine lives in `prober/`.
@@ -26,6 +27,7 @@ system-prompt.md
 prober/<fragment>.md
 teacher/<fragment>.md
 practice/<fragment>.md
+infinite/<fragment>.md
 shared/<fragment>.md
 ```
 
@@ -42,6 +44,10 @@ The available segment list always comes from current source discovery. An overri
 - Prompt instructions are not a substitute for structural validation. For example, `plan_init` can rewrite the map, and the conclude pause is doctrine rather than a terminating execute result. Read the actual registry and schemas before describing a behavior as enforced.
 
 See [architecture](../../../docs/architecture.md#teaching-and-practice) for runtime phases, registry differences and pause mechanics; [teaching methodology](../../../docs/teaching-methodology.md) for the method. Background workers and extraction have their own instructions in their implementation modules; this loader is not a catalog of every prompt in the application.
+
+## The workspace block
+
+A chat that has its own folder appends one more section, `# This chat's folder`, after every fragment, for the teacher, practice and infinite agents. It is built in code ([`workspaceInstructions`](../tools/workspace.ts)) because it names the folder and only exists when the chat has one. It is not a segment and cannot be overridden from Settings. Fragments that mention `run_command` or `write_file` must say what to do when that section is absent.
 
 ## Editing fragments
 

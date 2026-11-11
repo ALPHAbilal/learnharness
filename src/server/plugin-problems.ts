@@ -1,4 +1,5 @@
 import { ChatInputError, type PluginProblemSubmissionInput } from "../core/input-events.ts";
+import { isPracticeLike } from "../core/contracts/chat.ts";
 import { activeProblemOf, activeProblemOccurrenceOf, newMessageId, type LhMessage } from "../core/native-messages.ts";
 import { clonePluginQuestionJson, freezePluginQuestionValue, samePluginQuestionOccurrence } from "../core/plugin-questions.ts";
 import { preparePluginProblemSubmissionImages } from "../core/plugin-submissions.ts";
@@ -8,7 +9,7 @@ import type { PluginProblemResolution } from "./plugin-host.ts";
 export type ProblemTypeResolver = (pluginId: string, typeId: string, contractVersion: number) => PluginProblemResolution;
 export function requirePluginProblemTarget(record: { kind?: string; messages: readonly LhMessage[] }, input: Pick<PluginProblemSubmissionInput, "problemId" | "occurrence">): PluginProblemSnapshot {
   const active = activeProblemOf(record.messages), occurrence = activeProblemOccurrenceOf(record.messages);
-  if (record.kind !== "practice" || !active?.pluginProblem || active.pluginProblem.problemId !== input.problemId || !occurrence || !samePluginQuestionOccurrence(occurrence, input.occurrence))
+  if (!isPracticeLike(record.kind) || !active?.pluginProblem || active.pluginProblem.problemId !== input.problemId || !occurrence || !samePluginQuestionOccurrence(occurrence, input.occurrence))
     throw new ChatInputError("This problem is no longer active. Sync the saved session before trying again.");
   return active.pluginProblem;
 }

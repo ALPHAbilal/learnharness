@@ -34,17 +34,23 @@ function chatFile(id: string): string {
  *  phase, busy, pendingQuestion) is already announced by turn-started /
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
-function createChat(title: string, kind?: "practice"): ChatRecord {
+function createChat(title: string, kind?: "practice" | "infinite", workspaceDir?: (id: string) => string): ChatRecord {
 	const now = new Date().toISOString();
+	const id = `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+	// The chat's folder is made BEFORE the record lands: a folder that
+	// cannot be created throws here, so no record is ever written without
+	// the folder it names.
+	const folder = workspaceDir?.(id);
 	const record: ChatRecord = {
-		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
+		id,
 		title: title.trim() || "Untitled session",
 		createdAt: now,
 		updatedAt: now,
 		messages: [],
 		// Practice sessions carry the marker; teach stays ABSENT (absence
 		// reads as teach — pre-practice records never migrate).
-		...(kind === "practice" ? { kind: "practice" as const } : {}),
+		...(kind === "practice" || kind === "infinite" ? { kind } : {}),
+		...(folder ? { workspaceDir: folder } : {}),
 	};
 	fs.mkdirSync(PATHS.chats, { recursive: true });
 	writeChat(record);

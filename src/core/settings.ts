@@ -37,6 +37,7 @@ import type { ChatSettings } from "./contracts/chat.ts";
 import { isSearchEngineId, type SearchEngineId } from "./search.ts";
 import { isDictationLanguage, type DictationLanguage } from "./dictation.ts";
 import { parseFileAccessSettings, type FileAccessSettings } from "./file-access.ts";
+import { isWorkspacePath, type WorkspaceSettings } from "./workspace.ts";
 import { COLOR_OVERRIDE_KEYS, isThemeId, type AppearanceColorOverrides } from "./themes.ts";
 
 /** The schema version this code understands. Bump ONLY for breaking shape
@@ -383,6 +384,9 @@ export interface AgentSettings {
 	 *  the current policy is read per new tool call/job start. Existing
 	 *  sensitive-location/credential denials always win, not a whole-data ban. */
 	fileAccess?: FileAccessSettings;
+	/** The learner's main workspace folder: every new chat gets its own
+	 *  folder under it. Absent path = not chosen; chat creation refuses. */
+	workspace?: WorkspaceSettings;
 }
 
 /** Markdown-rendering knobs — the bare-bones set (owner decision). */
@@ -762,6 +766,12 @@ function sanitizeAgent(raw: Record<string, unknown>): AgentSettings {
 	if (raw.fileAccess !== undefined) {
 		const parsed = parseFileAccessSettings(raw.fileAccess);
 		out.fileAccess = parsed.ok ? parsed.settings : { restricted: true, folders: [] };
+	}
+	// Workspace folder: lenient read side — a malformed value drops and the
+	// "not chosen" state resumes (chat creation then refuses and says why).
+	if (raw.workspace !== null && typeof raw.workspace === "object" && !Array.isArray(raw.workspace)) {
+		const value = (raw.workspace as Record<string, unknown>).path;
+		out.workspace = typeof value === "string" && isWorkspacePath(value.trim()) ? { path: value.trim() } : {};
 	}
 	return out;
 }

@@ -21,6 +21,8 @@ import { after, describe, it } from "node:test";
 // ── the seam, BEFORE any config-loading import ──────────────────────────────
 const TMP_DATA = fs.mkdtempSync(path.join(os.tmpdir(), "lh-birth-stamp-"));
 process.env.LH_DATA_DIR = TMP_DATA;
+// Chat creation needs a workspace folder; these pins are not about it.
+process.env.LH_WORKSPACE_DIR = path.join(TMP_DATA, "workspace");
 
 const { POST } = await import("../app/api/chats/route.ts");
 const { readSettings, writeSettings } = await import("../src/store/settings.ts");

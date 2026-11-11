@@ -33,6 +33,7 @@ import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
 import { isSearchEngineId, SEARCH_ENGINES } from "../core/search.ts";
 import { isDictationLanguage } from "../core/dictation.ts";
 import { parseFileAccessSettings } from "../core/file-access.ts";
+import { isWorkspacePath } from "../core/workspace.ts";
 
 /** Parsed-or-rejected — `ok: false` carries the 400's error message. */
 export type SettingsBodyResult<T> =
@@ -225,6 +226,19 @@ export function parseAgentSettingsBody(body: unknown): SettingsBodyResult<AgentS
 			return { ok: false, error: "fileAccess.folders must be absolute on the server filesystem (or start with ~/)" };
 		}
 		settings.fileAccess = parsed.settings;
+	}
+	// Workspace folder: strict write side. An object with no path clears it.
+	if (raw.workspace !== undefined) {
+		const workspace = asRecord(raw.workspace);
+		if (!workspace) return { ok: false, error: "workspace must be an object" };
+		if (workspace.path === undefined) settings.workspace = {};
+		else {
+			const value = typeof workspace.path === "string" ? workspace.path.trim() : "";
+			if (!isWorkspacePath(value) || (value !== "~" && !value.startsWith("~/") && !path.isAbsolute(value))) {
+				return { ok: false, error: "workspace.path must be an absolute folder path on this computer (or start with ~/)" };
+			}
+			settings.workspace = { path: value };
+		}
 	}
 	return { ok: true, settings };
 }

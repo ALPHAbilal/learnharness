@@ -98,10 +98,13 @@ Supporting declaration used by a public type. This is not an additional runtime 
 
 Session kind: teach is the default when a saved record omits kind.
 Practice uses the adaptive-practice agent without teaching extraction or
-graph writes. Reading an absent kind does not require a record migration.
+graph writes. Infinite is an endless run of coding challenges toward an
+agreed target; it runs the practice machinery under its own prompts, and
+plugin learning-data reads report it as practice. Reading an absent kind
+does not require a record migration.
 
 ```ts
-export type ChatKind = "teach" | "practice";
+export type ChatKind = "teach" | "practice" | "infinite";
 ```
 
 ## ChatListItem
@@ -158,6 +161,7 @@ export interface ChatRecord {
     messages: LhMessage[];
     imageSnapshots?: Record<string, ImageSnapshot>;
     kind?: ChatKind;
+    workspaceDir?: string;
     tree?: PlanTree;
     turns?: TurnUsage[];
     extractions?: ExtractionRunUsage[];
@@ -178,6 +182,7 @@ export interface ChatRecord {
 - [messages](#chatrecord-messages)
 - [imageSnapshots](#chatrecord-imagesnapshots)
 - [kind](#chatrecord-kind)
+- [workspaceDir](#chatrecord-workspacedir)
 - [tree](#chatrecord-tree)
 - [turns](#chatrecord-turns)
 - [extractions](#chatrecord-extractions)
@@ -229,6 +234,16 @@ The session's kind; an absent field reads as teach.
 
 ```ts
 kind?: ChatKind;
+```
+
+### ChatRecord workspaceDir
+
+Absolute path of this chat's own folder under the learner's workspace
+folder, created at chat birth. Absent on chats born before workspaces
+existed: those have no folder, no workspace tools and no open control.
+
+```ts
+workspaceDir?: string;
 ```
 
 ### ChatRecord tree

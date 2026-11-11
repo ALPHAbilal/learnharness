@@ -1,6 +1,7 @@
 import { chainsForSelection, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import { compactionInFlight, createChat, createWorkspaceFolder, isTurnRunning, listChats, readSettingsRecord, resolveWorkspaceRoot, stores, titleFromPrompt, WorkspaceFolderError } from "@/src/server";
+import { WORKSPACE_NOT_CONFIGURED_CODE, WORKSPACE_NOT_CONFIGURED_MESSAGE } from "@/src/core";
 import type { ChatListItem } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
@@ -24,8 +25,23 @@ export async function POST(req: Request) {
 	const title = typeof body.title === "string" ? body.title : "";
 	// Practice sessions (owner, 2026-10-04): kind "practice" marks the
 	// record — the practice agent + its tools from turn 1, no extraction.
-	const kind = body.kind === "practice" ? ("practice" as const) : undefined;
-	const chat = createChat(titleFromPrompt(title || "Untitled session"), kind);
+	// Infinite sessions run the same machinery under their own prompts.
+	const kind = body.kind === "practice" || body.kind === "infinite" ? body.kind : undefined;
+	// WORKSPACES: every new chat owns a folder under the learner's workspace
+	// folder. No folder chosen → refuse BEFORE creating anything (no orphan
+	// chats); a folder that cannot be made → no chat either.
+	const workspaceRoot = resolveWorkspaceRoot();
+	if (!workspaceRoot) {
+		return Response.json({ error: WORKSPACE_NOT_CONFIGURED_MESSAGE, code: WORKSPACE_NOT_CONFIGURED_CODE }, { status: 409 });
+	}
+	const chatTitle = titleFromPrompt(title || "Untitled session");
+	let chat;
+	try {
+		chat = createChat(chatTitle, kind, (id) => createWorkspaceFolder(workspaceRoot, chatTitle, id));
+	} catch (error) {
+		if (error instanceof WorkspaceFolderError) return Response.json({ error: error.message }, { status: 500 });
+		throw error;
+	}
 	// PER-SESSION MODELS (owner, 2026-09-28): a session owns its model +
 	// thinking level from birth — stamped verbatim from the STRONG slot,
 	// the new-session default. From here the strong slot never reaches

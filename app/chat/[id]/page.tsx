@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
-import { slotsConfigured } from "@/src/core";
+import { isPracticeLike, slotsConfigured } from "@/src/core";
 import { compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +24,11 @@ export default async function ChatPage({
 			key={chat.id}
 			chatId={chat.id}
 			title={chat.title}
-			kind={chat.kind ?? "teach"}
+			// Infinite sessions run the practice interface (one challenge at a
+			// time, the same dock); only their label and prompts differ.
+			kind={isPracticeLike(chat.kind) ? "practice" : "teach"}
+			infinite={chat.kind === "infinite"}
+			workspaceDir={chat.workspaceDir}
 			// Wave D: the record IS native agent history — the client view is
 				// derived app-side (core/view.ts projectView; GET serves the same
 				// native messages).

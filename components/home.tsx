@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { SurfaceRegion, usePageSurfaceBoundary, useSurfaceChromeStyle } from "./plugin-surfaces";
-import { CornerDownLeftIcon, DumbbellIcon } from "lucide-react";
+import { CornerDownLeftIcon, DumbbellIcon, InfinityIcon } from "lucide-react";
 import { GraphView } from "@/components/graph-view";
 import { MinimalHome } from "@/components/minimal-home";
 import { SetupDialog } from "@/components/setup-dialog";
@@ -16,6 +16,7 @@ import { isInteractionScopeEligible } from "./plugin-input-focus";
 import { SidebarToggle } from "@/components/sidebar";
 import { StatsBar } from "@/components/stats-bar";
 import { OPENING_PROMPT_FAILURE } from "@/components/opening-prompt";
+import { startFailureMessage } from "@/components/start-session";
 import { PathInput } from "@/components/path-input";
 import { AttachFilesButton } from "@/components/attach-files-button";
 import { SessionStarter } from "@/components/start-session";
@@ -71,6 +72,7 @@ export function Home({
 	const startingRef = useRef(false);
 	const starterRef = useRef(new SessionStarter());
 	const [startError, setStartError] = useState(false);
+	const [startErrorText, setStartErrorText] = useState(OPENING_PROMPT_FAILURE);
 	/* Run end focuses the topic input (owner, 2026-10-01): the hands are on
 	 * the keyboard from the stop. Falling edge only; this surface's only
 	 * dictation target IS this textarea, so no case-split is needed. */
@@ -100,7 +102,7 @@ export function Home({
 	 *  may carry proposition picks from the chain table (the chip above
 	 *  the composer opens the picker; the picks seed the opening prompt).
 	 *  Not enforcing any input format — the picks are a convenience. */
-	const [mode, setMode] = useState<"teach" | "practice">("teach");
+	const [mode, setMode] = useState<"teach" | "practice" | "infinite">("teach");
 	const [practiceProps, setPracticeProps] = useState<{ id: string; name: string; statement: string }[]>([]);
 	const [chainSelectOpen, setChainSelectOpen] = useState(false);
 	// The chain table is CONTROLLED off this id set (the lifted pick).
@@ -154,13 +156,14 @@ export function Home({
 			// chains among them); the prompt stays the learner's own words.
 			const target = await starterRef.current.start({
 				title: t,
-				...(mode === "practice" ? { kind: "practice" } : {}),
+				...(mode === "teach" ? {} : { kind: mode }),
 				...(practiceProps.length > 0 ? { graphContext: { propositions: practiceProps } } : {}),
 			}, fetch, JSON.stringify(catalog?.slots.strong));
 			router.push(target);
-		} catch {
+		} catch (error) {
 			startingRef.current = false;
 			setBusy(false);
+			setStartErrorText(startFailureMessage(error));
 			setStartError(true);
 		}
 	};
@@ -241,7 +244,7 @@ export function Home({
 							)
 						)}
 					/>
-					{startError && <p role="alert" className="mb-2 text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
+					{startError && <p role="alert" className="mb-2 text-sm text-destructive">{startErrorText}</p>}
 					<form
 						data-attachment-composer=""
 						className="flex items-end gap-1.5 rounded-2xl border bg-card p-1.5 shadow-lg"
@@ -275,7 +278,7 @@ export function Home({
 								void start();
 							}
 						}}
-						placeholder={mode === "practice" ? "What do you want to practice?" : "What do you want to learn?"}
+						placeholder={mode === "practice" ? "What do you want to practice?" : mode === "infinite" ? "What do you want to get good at?" : "What do you want to learn?"}
 						autoFocus
 						className="field-sizing-content lh-input max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2.5 py-2 outline-none placeholder:text-muted-foreground"
 					/>
@@ -300,7 +303,7 @@ export function Home({
 						turns={[] as TurnUsage[]}
 						leadingSlot={
 							<div className="flex items-center gap-0.5 rounded-md border border-border/60 bg-background p-0.5" data-testid="home-mode-switch">
-								{(["teach", "practice"] as const).map((m) => (
+								{(["teach", "practice", "infinite"] as const).map((m) => (
 									<button
 										key={m}
 										type="button"
@@ -313,8 +316,8 @@ export function Home({
 												: "text-muted-foreground hover:text-foreground")
 										}
 									>
-										{m === "practice" ? <DumbbellIcon aria-hidden="true" className="size-3" /> : null}
-										{m === "teach" ? "Teach" : "Practice"}
+										{m === "practice" ? <DumbbellIcon aria-hidden="true" className="size-3" /> : m === "infinite" ? <InfinityIcon aria-hidden="true" className="size-3" /> : null}
+										{m === "teach" ? "Teach" : m === "practice" ? "Practice" : "Infinite"}
 									</button>
 								))}
 							</div>

@@ -15,6 +15,12 @@ Choose **Strong**, **Cheap**, and **Vision** models in Settings. There are no fa
 
 Optional web search supports Tavily, Brave, Exa, Firecrawl, and hosted Ollama search; configure a key for the engine you want to use. Research can still fetch known URLs without a search key. Dictation has its own service key below.
 
+## Choose a workspace folder
+
+Before your first session, open **Settings → Agent → Workspace folder** and enter a folder on your disk, for example `~/learnharness-work`. Every new session gets its own folder inside it, and the app will not start a session until this is set.
+
+The folder is where you write and run code in your own editor. The **VS Code** button at the top of a session opens it. The agent works in the same folder: it can read your files, create files, and run commands there to check your work. Commands run with your own user permissions and are not sandboxed. Every tool call the agent makes is saved under the app's data folder in `tool-logs/`, one file per session. Sessions created before this setting existed have no folder.
+
 ## Start a session
 
 Choose **Teach** and describe what you want to understand. The agent probes your starting point, presents a plan, and teaches through explanations and checks. Reply naturally to accept or revise the plan.
@@ -22,6 +28,10 @@ Choose **Teach** and describe what you want to understand. The agent probes your
 Use the thinking fields to explain your reasoning, uncertainty, or reaction—not only your selected answer. You can type or dictate. Your confidence is self-reported, not an independent assessment.
 
 Choose **Practice** for problems rather than a lesson. Start from selected graph material or describe material directly. Submit your thinking as you work; the model's committed solution is revealed when the problem concludes. Use **Next problem** when ready to continue.
+
+Choose **Infinite** to get good at something by doing it. Say what you want to get good at; you and the agent agree on a target, and then it poses one coding challenge at a time in the session's folder. You solve each in your editor and say when you are done; the agent runs your code, gives a verdict, and the next challenge is harder. It does not end until you stop.
+
+For a programming goal in **Teach**, the lesson becomes a build course: a small project cut into stages, where each stage starts with why the piece is needed, you write it, the agent runs it, and one "why does this work" question closes the stage.
 
 Sessions are saved locally, including earlier messages when context is compacted. The [keyboard guide](keyboard.md) covers submission, focus, question controls, and cancellation.
 

@@ -33,6 +33,10 @@ function headlineArg(tool: string, input: unknown): string {
 		return p;
 	}
 	if (typeof inp.pattern === "string") return inp.pattern;
+	// The workspace tools: the command line, or the file written — so the
+	// learner sees at a glance what the agent ran or changed.
+	if (tool === "run_command" && typeof inp.command === "string") return inp.command;
+	if (tool === "write_file" && typeof inp.path === "string") return inp.path;
 	// list_propositions: the session id is the call's subject — the
 	// collapsed line reads "list_propositions chat_…". Shown as given
 	// (the id is exactly what list_sessions reported to the model).

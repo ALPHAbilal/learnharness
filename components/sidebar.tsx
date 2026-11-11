@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { MenuShell } from "@/components/menu-shell";
 import { DeleteSessionDialog } from "@/components/delete-session-dialog";
 import type { ChatDeleteMode, ThemeMode } from "@/src/core";
-import { DumbbellIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import { DumbbellIcon, InfinityIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, PlusIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import { ActivitySection } from "@/components/activity-dock";
 import { CoverageMenuBlock } from "@/components/extraction-coverage";
 import { LhMark } from "@/components/lh-mark";
@@ -17,7 +17,7 @@ import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { fuzzyScore } from "@/src/core";
+import { fuzzyScore, isPracticeLike } from "@/src/core";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import type { ChatListItem } from "@/src/core";
 import { kbdEventForAction } from "@/src/core";
@@ -283,7 +283,7 @@ export function timeAgo(iso: string, now = new Date()): string {
 function sessionMeta(chat: ChatListItem): string {
 	if (chat.compacting) return `Compacting context · ${timeAgo(chat.updatedAt)}`;
 	if (chat.pendingQuestion) return `Waiting for input · ${timeAgo(chat.updatedAt)}`;
-	if ((chat.kind ?? "teach") === "practice" && chat.pendingProblem) {
+	if (isPracticeLike(chat.kind) && chat.pendingProblem) {
 		return `Problem waiting · ${timeAgo(chat.updatedAt)}`;
 	}
 	if (chat.busy) return "Working…";
@@ -338,6 +338,9 @@ export function SessionRow({
 			    the teaching rows and reads cleaner. */}
 			{(chat.kind ?? "teach") === "practice" && (
 				<DumbbellIcon className="size-3.5 shrink-0 text-muted-foreground/70" aria-label="Practice session" />
+			)}
+			{chat.kind === "infinite" && (
+				<InfinityIcon className="size-3.5 shrink-0 text-muted-foreground/70" aria-label="Infinite session" />
 			)}
 		</button>
 	);
@@ -399,7 +402,7 @@ export function RenameRow({ chat, onCommit, onCancel }: { chat: ChatListItem; on
 /** The three-way kind filter (practice sessions, owner 2026-10-04):
  *  Teaching / All / Practice — a client-side filter over the same
  *  snapshot, persisted in localStorage, defaulting to All. */
-export type SessionKindFilter = "teach" | "all" | "practice";
+export type SessionKindFilter = "teach" | "all" | "practice" | "infinite";
 const KIND_FILTER_KEY = "lh:session-kind-filter";
 
 function SessionsSidebar() {
@@ -410,7 +413,7 @@ function SessionsSidebar() {
 	const [kindFilter, setKindFilter] = useState<SessionKindFilter>("all");
 	useEffect(() => {
 		const stored = window.localStorage.getItem(KIND_FILTER_KEY);
-		if (stored === "teach" || stored === "all" || stored === "practice") setKindFilter(stored);
+		if (stored === "teach" || stored === "all" || stored === "practice" || stored === "infinite") setKindFilter(stored);
 	}, []);
 	const setFilter = useCallback((f: SessionKindFilter) => {
 		setKindFilter(f);
@@ -722,6 +725,17 @@ function SessionsSidebar() {
 						<span className="min-w-0 truncate">Practice</span>
 						<span className="sr-only">create a new practice session</span>
 					</button>
+					<button
+						type="button"
+						data-testid="new-session-infinite"
+						title="Infinite"
+						onClick={() => router.push("/chat/new?mode=infinite")}
+						className="flex min-w-0 w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+					>
+						<InfinityIcon className="size-3 shrink-0" />
+						<span className="min-w-0 truncate">Infinite</span>
+						<span className="sr-only">create a new infinite session</span>
+					</button>
 				</PluginSidebarActions>
 
 				<div className="mx-3 mb-2 flex items-center gap-2">
@@ -795,20 +809,20 @@ function SessionsSidebar() {
 				    hatch on the right, mirroring the create-buttons above.
 				    Persisted client-side. */}
 				<div className="mx-3 flex items-center gap-0.5 rounded-md border border-border/60 bg-background p-0.5" data-testid="session-kind-filter">
-					{(["teach", "practice", "all"] as const).map((f) => (
+					{(["teach", "practice", "infinite", "all"] as const).map((f) => (
 						<button
 							key={f}
 							type="button"
 							data-testid={`kind-filter-${f}`}
 							onClick={() => setFilter(f)}
 							className={cn(
-								"flex-1 rounded-sm px-2 py-1 text-[11px] uppercase tracking-wider transition-colors",
+								"min-w-0 flex-1 truncate rounded-sm px-1 py-1 text-[11px] uppercase tracking-wider transition-colors",
 								kindFilter === f
 									? "bg-accent text-foreground"
 									: "text-muted-foreground hover:text-foreground",
 							)}
 						>
-							{f === "teach" ? "Teaching" : f === "all" ? "All" : "Practice"}
+							{f === "teach" ? "Teaching" : f === "all" ? "All" : f === "infinite" ? "Infinite" : "Practice"}
 						</button>
 					))}
 				</div>

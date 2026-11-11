@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { FileAccessPolicy } from "../agent/tools/file-access.ts";
 import { readFileAccessSettings } from "../store/settings.ts";
+import { resolveWorkspaceRoot } from "./workspace.ts";
 
 export function expandFolder(folder: string, home: string = os.homedir()): string {
 	if (folder === "~") return home;
@@ -16,7 +17,12 @@ export function expandFolder(folder: string, home: string = os.homedir()): strin
 export function fileAccessPolicy(): FileAccessPolicy {
 	const result = readFileAccessSettings();
 	if (!result.ok) return { restricted: true, folders: [], error: result.error };
-	return { restricted: result.settings.restricted, folders: result.settings.folders.map((folder) => expandFolder(folder)) };
+	const folders = result.settings.folders.map((folder) => expandFolder(folder));
+	// The learner's workspace folder is always readable: a restricted policy
+	// that left it out would hide every chat's own folder from the agent.
+	const workspace = result.settings.restricted ? resolveWorkspaceRoot() : null;
+	if (workspace && !folders.includes(workspace)) folders.push(workspace);
+	return { restricted: result.settings.restricted, folders };
 }
 
 /** Safe UI diagnostic, no raw JSON/file contents. A corrupt record must

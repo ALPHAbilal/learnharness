@@ -67,7 +67,8 @@ import { PlanBlock, PlanPopup, latestTree } from "@/components/plan-block";
 import { PlanMarginalia, planExists } from "@/components/plan-window";
 import { MermaidOverlay, SessionMermaidContext, type SessionImage } from "@/components/session-overlay";
 import { AbortTurnDialog, type AbortMode } from "@/components/abort-turn-dialog";
-import { ArrowRightIcon, DumbbellIcon, MessageCircleQuestionIcon, WaypointsIcon } from "lucide-react";
+import { ArrowRightIcon, DumbbellIcon, InfinityIcon, MessageCircleQuestionIcon, WaypointsIcon } from "lucide-react";
+import { WorkspaceChip } from "@/components/workspace-chip";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
 import { PluginQuestionDock } from "./plugin-question-dock";
@@ -271,6 +272,8 @@ export function Chat({
 	initiallyCompacting = false,
 	initialConfigured = false,
 	kind = "teach",
+	infinite = false,
+	workspaceDir,
 }: {
 	chatId: string;
 	title: string;
@@ -281,6 +284,11 @@ export function Chat({
 	 *  renders no phase chip (no probe→teach arc applies) and a Practice
 	 *  tag rides the header instead. */
 	kind?: "teach" | "practice";
+	/** An Infinite session: the practice interface under its own label. */
+	infinite?: boolean;
+	/** This chat's folder on the learner's disk; absent on chats born
+	 *  before workspaces (no open-folder control then). */
+	workspaceDir?: string;
 	initialPrompt?: string;
 	/** A teacher turn is running server-side but attached to no client
 	 * (navigated away mid-turn, returned while in flight). */
@@ -1723,18 +1731,19 @@ export function Chat({
 					{/* Practice (owner, 2026-10-04): the coverage ring hides —
 				    practice never extracts, so an ever-filling ring with no
 				    run behind it would lie. */}
+					{workspaceDir && <WorkspaceChip chatId={chatId} workspaceDir={workspaceDir} />}
 					{kind !== "practice" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
 					{/* Practice sessions: no phase arc — a quiet Practice tag
 					    instead of the phase chip. */}
 					{kind === "practice" ? (
 						<span
 							data-testid="phase-chip"
-							data-phase="practice"
+							data-phase={infinite ? "infinite" : "practice"}
 							aria-hidden="true"
 							className="pointer-events-none flex shrink-0 select-none items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
 						>
-							<DumbbellIcon className="size-3" />
-							Practice
+							{infinite ? <InfinityIcon className="size-3" /> : <DumbbellIcon className="size-3" />}
+							{infinite ? "Infinite" : "Practice"}
 						</span>
 					) : (
 						<PhaseChip phase={phases.at(-1) ?? "probe"} />

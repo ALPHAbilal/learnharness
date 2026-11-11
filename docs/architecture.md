@@ -83,6 +83,23 @@ Practice uses the same turn/persistence/recovery path, not a separate problem-se
 
 [Prompt composition](../src/agent/prompts/README.md) and [tool-content display recovery](tool-content-recovery.md) have separate references. Plugins can add bounded question/problem types without replacing builtins; see [Trusted local plugins](#trusted-local-plugins-api-v1).
 
+### Workspaces and Infinite sessions
+
+Every new chat owns a folder on the learner's disk. The learner chooses one main workspace folder (Settings → Agent → Workspace folder, stored as `agent.workspace.path`; `LH_WORKSPACE_DIR` overrides it). `POST /api/chats` refuses with `409 workspace_not_configured` until it is set, then creates `<workspace>/<title-slug>-<id-tail>` before the record is written and stamps the path on the record as `workspaceDir`. Chats created before workspaces have no folder and are not migrated: they run exactly as before.
+
+When a record has `workspaceDir`, the teacher, practice and infinite agents receive two extra tools from [`tools/workspace.ts`](../src/agent/tools/workspace.ts) and an instruction block naming the folder; the prober does not.
+
+| Tool | Does | Limits |
+| --- | --- | --- |
+| `run_command` | One shell command with the folder as its working directory | 60 s default, 600 s maximum; each output stream cut to its last 30,000 characters; stdin closed; the app's provider keys removed from the child environment |
+| `write_file` | Create or replace one text file; relative paths are inside the folder, absolute paths are used as given | The sensitive-path guard and the learner's own file-access restriction apply |
+
+**This is not a sandbox.** Commands run with the learner's own user permissions. [`tool-log.ts`](../src/agent/tool-log.ts) appends every tool call of every conversation agent, with its exact arguments, to `data/tool-logs/<chatId>.jsonl`. The log records what happened; it prevents nothing.
+
+`POST /api/chats/:id/workspace` opens the folder with VS Code's `code` launcher. A launcher that cannot be started is an ordinary `ok: false` reply carrying the folder path, which the chat's top bar shows.
+
+**Infinite** is a third chat kind (`ChatRecord.kind: "infinite"`). It runs the practice machinery unchanged — the `problem`/`conclude` registry, the one-active-problem gate, the pose-ends-the-turn rule, the between-problems pause, no extraction — under its own prompt directory, `src/agent/prompts/infinite/`. `isPracticeLike(kind)` in [`contracts/chat.ts`](../src/core/contracts/chat.ts) is the single test every "is this a practice-style session" branch reads. Plugins are told an Infinite session is `"practice"`, so the plugin API has two session kinds as before. In teaching sessions, the build-course doctrine is one teacher fragment, `teacher/60-build-courses.md`.
+
 ## Background work
 
 Research, PDF, demo, and visual tools persist jobs, acknowledge dispatch, and start independent workers through [`subagents/runner.ts`](../src/agent/subagents/runner.ts). Demos are checked using the browser helper; visuals use render-and-inspect loops. PDF/SVG rendering is native; demo execution uses Electron's browser service with system Chrome fallback. Ordinary figure SVGs receive the same two render-only repairs as their display (a missing root namespace and HTML `&nbsp;`), then rasterize only with resvg. Annotation inputs remain strict. Saved SVGs/downloads are not rewritten. Native SVG parsing/rendering failures go to the visual-maker's existing revision/failure handling, never a browser fallback; unsupported content silently ignored by resvg is not rescued by another engine.

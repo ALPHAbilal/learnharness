@@ -15,6 +15,8 @@ import {
 	type TeacherToolContext,
 } from "./tools.ts";
 import { practiceTools, createPracticeGate, type PracticeGate, type PracticeToolContext } from "./tools/practice.ts";
+import { RUN_COMMAND_TOOL, WRITE_FILE_TOOL, workspaceInstructions, workspaceTools } from "./tools/workspace.ts";
+import { withToolLog } from "./tool-log.ts";
 import { pluginProblemTools, isPluginProblemPoseAcknowledgment, type NativePluginProblemContribution } from "./plugin-problem-tools.ts";
 import { healToolRecord, withArgumentHeal } from "./tools/heal.ts";
 import { sendToUserApplies, sendToUserTool } from "./tools/send-to-user.ts";
@@ -54,13 +56,22 @@ import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./p
 
 /** Which agent's prompt directory to compose. Practice (2026-10-04)
  *  composes ONLY its own directory — see prompt-segments.ts. */
-export type AgentKind = "prober" | "teacher" | "practice";
+export type AgentKind = "prober" | "teacher" | "practice" | "infinite";
+
+/** Infinite sessions run on the practice machinery — the same problem /
+ *  conclude registry, the same pose-ends-the-turn rule — under their own
+ *  prompt directory. Everything that asks "is this a practice-style
+ *  agent" reads this. */
+function practiceLike(kind: AgentKind): boolean {
+	return kind === "practice" || kind === "infinite";
+}
 
 /** Reserve conversation builtins even when role/mechanics/settings gates hide them.
  * New builtin names must join this catalog; actual turn tools are reserved too. */
 export const CONVERSATION_TOOL_NAMES = Object.freeze([
 	...QUESTION_TOOLS, ...TOGGLEABLE_TOOLS, "probe_done", "read", "ls", "find", "grep",
 	"plan_init", "list_sessions", "list_propositions", "problem", "conclude", sendToUserTool.name,
+	RUN_COMMAND_TOOL, WRITE_FILE_TOOL,
 ] as const);
 
 // P2 (2026-09-19): segment discovery + override resolution live in ONE
@@ -101,6 +112,7 @@ const composedInstructions: Record<AgentKind, string> = {
 	prober: composeInstructions("prober"),
 	teacher: composeInstructions("teacher"),
 	practice: composeInstructions("practice"),
+	infinite: composeInstructions("infinite"),
 };
 
 // Money channel (wave 4): the chat-handler passes a per-turn collector;
@@ -155,6 +167,11 @@ export interface AgentBuildOptions {
 	 *  <chatId>.jsonl via providerEventObserver — the GLM-truncation /
 	 *  DeepSeek-id incident layer. Absent or env-off → no observer. */
 	chatId?: string;
+	/** This chat's own folder (ChatRecord.workspaceDir). Present → the
+	 *  teacher, practice and infinite agents gain run_command + write_file
+	 *  and the workspace instruction block. Absent (chats born before
+	 *  workspaces) → neither. The prober only measures: it never gets them. */
+	workspaceDir?: string;
 }
 
 /**
@@ -188,7 +205,7 @@ function makeQuestionStopper(kind: AgentKind) {
 			context.message.content
 				.filter((c) => c.type === "toolCall" && c.name !== undefined && (
 					(QUESTION_TOOLS as readonly string[]).includes(c.name) ||
-					(kind === "practice" && c.name === PRACTICE_PROBLEM_TOOL)
+					(practiceLike(kind) && c.name === PRACTICE_PROBLEM_TOOL)
 				))
 				.map((c) => c.id!),
 		);
@@ -208,13 +225,16 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// conversation-spec resolution as teaching); the cast keeps AgentKind
 	// ("practice" is not a ModelRole) honest about that.
 	const engine = opts.engine ?? piEngineFor(kind as "prober" | "teacher");
+	// Caller-owned test registries stay exactly as handed in.
+	const workspaceDir = opts.tools === undefined && kind !== "prober" ? opts.workspaceDir : undefined;
 	const stopper = makeQuestionStopper(kind);
 	const narrationGuard = narrationGuardApplies(kind, engine.model, opts.tools !== undefined);
 	const narrationHooks = narrationGuard ? makeNarrationGuard() : undefined;
 	const composedPrompt = opts.promptSwitches
 		? composeInstructions(kind, opts.promptSwitches)
 		: composedInstructions[kind]!;
-	const builtinPrompt = narrationGuard ? `${composedPrompt}\n\n---\n\n${SEND_TO_USER_DELIVERY_RULE}` : composedPrompt;
+	const guardedPrompt = narrationGuard ? `${composedPrompt}\n\n---\n\n${SEND_TO_USER_DELIVERY_RULE}` : composedPrompt;
+	const builtinPrompt = workspaceDir ? `${guardedPrompt}\n\n---\n\n${workspaceInstructions(workspaceDir)}` : guardedPrompt;
 	// Bind native read and preserve the kind/model-aware Claude output gate
 	// before resolving additive plugins. Explicit registries remain caller-owned.
 	const builtinTools = [
@@ -224,13 +244,16 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 		...(sendToUserApplies(kind, engine.model, opts.tools !== undefined)
 			? [withArgumentHeal(sendToUserTool)]
 			: []),
+		...(workspaceDir ? Object.values(workspaceTools(workspaceDir)) : []),
 	];
 	const contributions = opts.tools === undefined && opts.chatId && opts.pluginContributions
-		? opts.pluginContributions({ chatId: opts.chatId, agent: kind }, [...CONVERSATION_TOOL_NAMES, ...builtinTools.map(tool => tool.name)])
+		// Plugins know three agents; an Infinite session presents as practice
+		// (same tools, same problem flow), so the plugin API is unchanged.
+		? opts.pluginContributions({ chatId: opts.chatId, agent: kind === "infinite" ? "practice" : kind }, [...CONVERSATION_TOOL_NAMES, ...builtinTools.map(tool => tool.name)])
 		: undefined;
 	const questionLedger = contributions?.questionTypes?.length && opts.chatId
 		? new PluginQuestionLedger(contributions.questionTypes, opts.chatId, nodeExists) : undefined;
-	const problemTools = kind === "practice" && practice && opts.chatId
+	const problemTools = practiceLike(kind) && practice && opts.chatId
 		? pluginProblemTools(contributions?.problemTypes ?? [], opts.chatId, practice.gate, practice.graphNodes) : [];
 	// Never replace the builtin prompt or tools, or mutate an already-running Agent.
 	const systemPrompt = contributions?.instructions.length
@@ -240,6 +263,11 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// LH_PROVIDER_EVENTS=1 and the caller handed a chatId; undefined is
 	// the normal no-observer path (tests, env-off).
 	const providerEvents = opts.chatId ? providerEventObserver(opts.chatId, kind) : undefined;
+	const assembledTools = contributions ? [...builtinTools, ...contributions.tools, ...(questionLedger?.tools ?? []), ...problemTools] : builtinTools;
+	// THE TOOL LOG: every call of every tool in a real conversation is
+	// written down exactly as made (tool-log.ts). Caller-owned test
+	// registries and identity-less agents are left unwrapped.
+	const turnTools = opts.chatId && opts.tools === undefined ? withToolLog(opts.chatId, kind, assembledTools) : assembledTools;
 	const seenInputs = new Set((opts.messages ?? []).map((m) => (m as { id?: string }).id).filter(Boolean));
 	const agent = new Agent({
 		identity: APP_IDENTITY,
@@ -248,7 +276,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 			systemPrompt,
 			model: engine.model,
 			thinkingLevel: engine.level,
-			tools: contributions ? [...builtinTools, ...contributions.tools, ...(questionLedger?.tools ?? []), ...problemTools] : builtinTools,
+			tools: turnTools,
 			messages: opts.messages ?? [],
 		},
 		streamFn: engine.streamFn,
@@ -269,7 +297,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 		// exits BEFORE the steering poll — the parked-marker stranding our
 		// Wave C registerLiveAgent-before-runPiTurn design depends on.
 		// undefined preserves normal scheduling (the old boolean false).
-		finishTurn: (turn) => (turn.toolResults.some(result => questionLedger?.isAcknowledgment(result) || (kind === "practice" && isPluginProblemPoseAcknowledgment(result))) || stopper(turn) ? { action: "end" } : undefined),
+		finishTurn: (turn) => (turn.toolResults.some(result => questionLedger?.isAcknowledgment(result) || (practiceLike(kind) && isPluginProblemPoseAcknowledgment(result))) || stopper(turn) ? { action: "end" } : undefined),
 		// Wave C (2026-09-26, owner correction same day): markers handed to a
 		// live run drain from pi's STEERING queue — the lesson loop is one
 		// continuous teach→quiz→teach run, so delivery must inject at turn
@@ -403,6 +431,18 @@ export function createPracticeAgent(ctx: PracticeToolContext, opts: AgentBuildOp
 	if (opts.tools !== undefined) return baseAgentOptions("practice", opts, Object.values(opts.tools));
 	const gate = createPracticeGate(ctx);
 	return baseAgentOptions("practice", opts, Object.values(practiceTools(ctx, gate)), undefined, { gate, graphNodes: ctx.graphNodes });
+}
+
+/**
+ * The INFINITE agent: the practice registry (problem + conclude and the
+ * side tools) under the Infinite prompts (prompts/infinite/) — agree the
+ * target with the learner, then an endless run of harder challenges solved
+ * in the chat's folder. Built from turn 1 of a kind:"infinite" session.
+ */
+export function createInfiniteAgent(ctx: PracticeToolContext, opts: AgentBuildOptions = {}) {
+	if (opts.tools !== undefined) return baseAgentOptions("infinite", opts, Object.values(opts.tools));
+	const gate = createPracticeGate(ctx);
+	return baseAgentOptions("infinite", opts, Object.values(practiceTools(ctx, gate)), undefined, { gate, graphNodes: ctx.graphNodes });
 }
 
 export type ProberAgent = ReturnType<typeof createProberAgent>;
