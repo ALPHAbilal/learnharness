@@ -88,6 +88,12 @@ const nextConfig: NextConfig = {
 			// Side questions (2026-11-02): the side model's base prompt is read
 			// from disk per ask — a directory no agent-composition read names.
 			"src/agent/prompts/side-chat/*.md",
+			// Build branches (2026-11-13): the coach's prompt directory, and
+			// the PTY's per-platform prebuilt binary (@lydell/node-pty-<os>-<arch>,
+			// an optional-dep require the tracer cannot see; one per build).
+			"src/agent/prompts/build/*.md",
+			"node_modules/@lydell/node-pty/**/*",
+			"node_modules/@lydell/node-pty-*/**/*",
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
 			"node_modules/@silvia-odwyer/photon-node/**/*",
@@ -121,6 +127,7 @@ const nextConfig: NextConfig = {
 		"@napi-rs/canvas", // native binding — bundling breaks the .node require
 		"@silvia-odwyer/photon-node", // CJS loads its adjacent WASM from disk
 		"@resvg/resvg-js", // native binding — same
+		"@lydell/node-pty", // build-branch terminal: native PTY, loaded lazily with a pipe fallback
 	],
 };
 

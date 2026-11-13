@@ -51,13 +51,14 @@ export async function createBuildBranchResponse(parentId: string, req: Request):
 	const parent = stores.chatStore.getChat(parentId);
 	if (!parent) return json({ error: "Not found" }, 404);
 	if ((parent.kind ?? "teach") !== "teach") return json({ error: "Build branches open from teaching sessions." }, 400);
-	const body = (await req.json().catch(() => ({}))) as { nodeId?: unknown };
+	const body = (await req.json().catch(() => ({}))) as { nodeId?: unknown; messageId?: unknown };
 	const nodeId = typeof body.nodeId === "string" && body.nodeId ? body.nodeId : null;
+	const messageId = typeof body.messageId === "string" && parent.messages.some((m) => m.id === body.messageId) ? body.messageId : undefined;
 	if (nodeId && !parent.tree?.nodes.some((n) => n.id === nodeId)) return json({ error: `Unknown plan step: ${nodeId}` }, 400);
 
 	const { text, nodeTitle } = buildContextText(parent, nodeId);
 	const folder = allocateFolder(parent.id, nodeId);
-	const branch: BuildBranch = { parentChatId: parent.id, parentNodeId: nodeId, parentNodeTitle: nodeTitle, folder, phase: "customize" };
+	const branch: BuildBranch = { parentChatId: parent.id, parentNodeId: nodeId, parentNodeTitle: nodeTitle, ...(messageId ? { parentMessageId: messageId } : {}), folder, phase: "customize" };
 	const chat = stores.chatStore.createChat(`Build · ${nodeTitle}`.slice(0, 120), "build", branch);
 	// The branch keeps the lesson's model; a lesson without one falls back
 	// to the strong slot, exactly like a new session.
@@ -77,7 +78,7 @@ export function listBuildBranchesResponse(parentId: string): Response {
 	const branches = stores.chatStore
 		.listChats()
 		.flatMap((c) => c.branch?.parentChatId === parentId
-			? [{ id: c.id, title: c.title, nodeId: c.branch.parentNodeId, nodeTitle: c.branch.parentNodeTitle, phase: c.branch.phase, updatedAt: c.updatedAt }]
+			? [{ id: c.id, title: c.title, nodeId: c.branch.parentNodeId, nodeTitle: c.branch.parentNodeTitle, messageId: c.branch.parentMessageId ?? null, phase: c.branch.phase, updatedAt: c.updatedAt }]
 			: []);
 	return json({ branches });
 }

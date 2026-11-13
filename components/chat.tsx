@@ -67,7 +67,10 @@ import { PlanBlock, PlanPopup, latestTree } from "@/components/plan-block";
 import { PlanMarginalia, planExists } from "@/components/plan-window";
 import { MermaidOverlay, SessionMermaidContext, type SessionImage } from "@/components/session-overlay";
 import { AbortTurnDialog, type AbortMode } from "@/components/abort-turn-dialog";
-import { ArrowRightIcon, DumbbellIcon, MessageCircleQuestionIcon, WaypointsIcon } from "lucide-react";
+import { ArrowRightIcon, DumbbellIcon, HammerIcon, MessageCircleQuestionIcon, WaypointsIcon } from "lucide-react";
+import { BuildButton, type BuildBranchSummary } from "@/components/build/build-button";
+import { BuildContextCard, BuildReturnCard, type BuildContextData, type BuildReturnData } from "@/components/build/build-cards";
+import { BUILD_DONE_PROMPT, WorkspacePanel } from "@/components/build/workspace-panel";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
 import { PluginQuestionDock } from "./plugin-question-dock";
@@ -89,7 +92,7 @@ import { useSideThread, type SideThreadOpenArgs } from "@/components/use-side-th
 import { useRouter } from "next/navigation";
 import { PracticeDock } from "@/components/practice-dock";
 import { PluginProblemDock, type PluginProblemDockProps } from "./plugin-problem-dock";
-import { practiceProblemForCall } from "@/src/core";
+import { nodeAtMessage, practiceProblemForCall } from "@/src/core";
 import { PluginProblemSubmitted } from "./plugin-problem-submitted";
 import { readPluginProblemSubmission, pluginProblemById } from "@/src/core";
 import { ThinkingCard, ProblemCard, type PracticeThinkingData } from "@/components/practice-cards";
@@ -279,8 +282,9 @@ export function Chat({
 	initialError?: string;
 	/** The session kind (practice sessions, owner 2026-10-04): practice
 	 *  renders no phase chip (no probe→teach arc applies) and a Practice
-	 *  tag rides the header instead. */
-	kind?: "teach" | "practice";
+	 *  tag rides the header instead. Build branches (2026-11-13) render the
+	 *  same way plus the workspace panel beside the transcript. */
+	kind?: "teach" | "practice" | "build";
 	initialPrompt?: string;
 	/** A teacher turn is running server-side but attached to no client
 	 * (navigated away mid-turn, returned while in flight). */
@@ -988,6 +992,20 @@ export function Chat({
 	// One durable companion per explanation/check, in teaching AND practice.
 	// Main requests append new raw exchanges from every thread; closing only hides the UI.
 	const workingRef = useRef("");
+	// Build branches opened from this lesson (2026-11-13): their chips sit
+	// beside the step they were opened from. Refetched as the lesson grows
+	// (a returned branch's summary arrives with the next turn).
+	const [buildBranches, setBuildBranches] = useState<BuildBranchSummary[]>([]);
+	const lessonLength = nativeMessages.length;
+	useEffect(() => {
+		if (kind !== "teach") return;
+		let live = true;
+		fetch(`/api/chats/${encodeURIComponent(chatId)}/build`, { cache: "no-store" })
+			.then((res) => (res.ok ? res.json() : { branches: [] }))
+			.then((body: { branches?: BuildBranchSummary[] }) => { if (live) setBuildBranches(body.branches ?? []); })
+			.catch(() => {});
+		return () => { live = false; };
+	}, [chatId, kind, lessonLength]);
 	const sideThread = useSideThread(chatId, nativeMessages, () => {
 		// Plugin editors own opaque answer/submission values. Only host Thinking
 		// is safe helper context; read its live draft without introspecting the renderer.
@@ -1028,7 +1046,15 @@ export function Chat({
 	const renderSideEntry = (sourceMessageId?: string) => {
 		if (!sourceMessageId) return null;
 		const hasHistory = sideThread.threads.some((thread) => thread.anchor.messageId === sourceMessageId && thread.messages.length > 0);
-		return <div className="mt-1 flex justify-end">
+		return <div className="mt-1 flex items-center justify-end gap-1">
+			{kind === "teach" && (
+				<BuildButton
+					chatId={chatId}
+					messageId={sourceMessageId}
+					nodeId={nodeAtMessage(nativeMessages, sourceMessageId)}
+					branches={buildBranches.filter((b) => b.messageId === sourceMessageId)}
+				/>
+			)}
 			<Button type="button" variant="ghost" size="icon-xs" data-testid="side-conversation-button" data-side-segment-id={sourceMessageId}
 				data-has-history={hasHistory} aria-label={hasHistory ? "Open side conversation" : "Ask a side question"}
 				title={hasHistory ? "Open side conversation" : "Ask a side question"}
@@ -1723,7 +1749,7 @@ export function Chat({
 					{/* Practice (owner, 2026-10-04): the coverage ring hides —
 				    practice never extracts, so an ever-filling ring with no
 				    run behind it would lie. */}
-					{kind !== "practice" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
+					{kind === "teach" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
 					{/* Practice sessions: no phase arc — a quiet Practice tag
 					    instead of the phase chip. */}
 					{kind === "practice" ? (
@@ -1735,6 +1761,16 @@ export function Chat({
 						>
 							<DumbbellIcon className="size-3" />
 							Practice
+						</span>
+					) : kind === "build" ? (
+						<span
+							data-testid="phase-chip"
+							data-phase="build"
+							aria-hidden="true"
+							className="pointer-events-none flex shrink-0 select-none items-center gap-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+						>
+							<HammerIcon className="size-3" />
+							Build
 						</span>
 					) : (
 						<PhaseChip phase={phases.at(-1) ?? "probe"} />
@@ -1797,6 +1833,10 @@ export function Chat({
 											}
 											case "data-practice-thinking":
 												return <ThinkingCard key={pi} data={part.data as PracticeThinkingData} />;
+											case "data-build-context":
+												return <BuildContextCard key={pi} data={part.data as BuildContextData} />;
+											case "data-build-return":
+												return <BuildReturnCard key={pi} data={part.data as BuildReturnData} />;
 											case "data-practice-next":
 												// The learner's move-on signal (owner round 16): a compact
 												// centered mono-caps line — chrome, the dismissal register.
@@ -2221,6 +2261,8 @@ export function Chat({
 				<AbortTurnDialog mode={abortAsk} onClose={closeAbortAsk} onConfirm={confirmAbort} busy={busy} />
 				</div>
 			</div>
+			{/* Build branches (2026-11-13): the workspace beside the coach chat. */}
+			{kind === "build" && <WorkspacePanel chatId={chatId} busy={busy} onDone={() => void prepareText(BUILD_DONE_PROMPT)} />}
 		</div>
 		</CitationActionsContext.Provider>
 		</JobsContext.Provider>

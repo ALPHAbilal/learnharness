@@ -29,6 +29,8 @@ export interface BuildBranch {
 	parentNodeId: string | null;
 	/** The node's title (or a fallback label) as shown when branching. */
 	parentNodeTitle: string;
+	/** The lesson message the learner branched from (where its marker shows). */
+	parentMessageId?: string;
 	/** Absolute workspace folder for this branch. */
 	folder: string;
 	phase: "customize" | "build" | "returned";

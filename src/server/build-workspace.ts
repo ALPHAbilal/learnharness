@@ -101,6 +101,8 @@ export interface WorkspaceEntry {
 	path: string;
 	dir: boolean;
 	size: number;
+	/** Last modification (ms) — the editor reloads a clean file that changed. */
+	mtimeMs: number;
 }
 
 /** Recursive listing (POSIX-style relative paths), skipping tool caches. */
@@ -123,16 +125,19 @@ export function listFiles(folder: string): { entries: WorkspaceEntry[]; truncate
 			const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
 			if (entry.isDirectory()) {
 				if (SKIPPED_DIRS.has(entry.name)) continue;
-				entries.push({ path: rel, dir: true, size: 0 });
+				entries.push({ path: rel, dir: true, size: 0, mtimeMs: 0 });
 				walk(path.join(dir, entry.name), rel);
 			} else if (entry.isFile()) {
 				let size = 0;
+				let mtimeMs = 0;
 				try {
-					size = fs.statSync(path.join(dir, entry.name)).size;
+					const stat = fs.statSync(path.join(dir, entry.name));
+					size = stat.size;
+					mtimeMs = stat.mtimeMs;
 				} catch {
 					/* raced deletion */
 				}
-				entries.push({ path: rel, dir: false, size });
+				entries.push({ path: rel, dir: false, size, mtimeMs });
 			}
 		}
 	};

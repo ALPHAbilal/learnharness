@@ -488,6 +488,16 @@ function projectMarker(marker: LhMarkerMessage, out: LhViewMessage[]): void {
 			});
 			return;
 		}
+		case "build-context":
+		case "build-return": {
+			// Build branches (2026-11-13): user-side scaffolding cards — the
+			// branch's parent context, and a returned branch's summary.
+			const type: string = marker.customType === "build-context" ? "data-build-context" : "data-build-return";
+			const details = (marker.details ?? {}) as Record<string, unknown>;
+			const data: Record<string, unknown> = { ...details, content: marker.content };
+			out.push({ id: marker.id, role: "user", parts: [{ type, id: `bb_${marker.id}`, data }] });
+			return;
+		}
 		case "side-question":
 		case "side-question-told":
 			// Raw context entries do not split the teaching segment or render

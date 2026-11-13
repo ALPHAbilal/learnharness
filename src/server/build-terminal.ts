@@ -202,7 +202,6 @@ export class BuildTerminal {
 		this.ensureShell();
 		// Line tracking ignores escape sequences (arrows, function keys);
 		// history recalls are still visible in the shell's own echo.
-		// eslint-disable-next-line no-control-regex
 		const typed = data.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]|\u001bO.|\u001b./g, "");
 		for (const ch of typed) {
 			if (ch === "\r" || ch === "\n") {

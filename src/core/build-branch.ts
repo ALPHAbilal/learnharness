@@ -315,11 +315,8 @@ export function newBuildReturnMessage(entry: { branchId: string; nodeId: string 
 /** Strip ANSI escape sequences and carriage-return overwrites. */
 export function stripAnsi(text: string): string {
 	return text
-		// eslint-disable-next-line no-control-regex
 		.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-		// eslint-disable-next-line no-control-regex
 		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-		// eslint-disable-next-line no-control-regex
 		.replace(/\u001b[@-Z\\-_]/g, "")
 		.replace(/\r\n/g, "\n")
 		.replace(/[^\n]*\r(?!\n)/g, "");
