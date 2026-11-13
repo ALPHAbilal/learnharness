@@ -65,7 +65,29 @@ export interface BuildActiveStage {
 	testCommand: string;
 }
 
+/**
+ * How much the learner builds on their own (2026-11-13 calibration,
+ * docs/superpowers/specs/2026-11-13-build-calibration.md):
+ * - guided:  small blanks inside scaffolded files; one idea per blank
+ * - half:    the learner writes whole functions; starter files give structure
+ * - scratch: an empty file; the learner builds everything
+ */
+export type BuildLevel = "guided" | "half" | "scratch";
+
+/** The level the learner and the coach agreed on in the customize phase,
+ *  with the hands-on evidence it rests on. build_plan is refused until it
+ *  exists. */
+export interface BuildCalibration {
+	level: BuildLevel;
+	/** What the learner showed in the build probe (their answers, a tiny
+	 *  task they did), in one or a few lines. */
+	evidence: string;
+	at: string;
+}
+
 export interface BuildState {
+	/** Set by set_level; absent on branches created before calibration. */
+	calibration?: BuildCalibration | null;
 	plan: BuildStage[];
 	active: BuildActiveStage | null;
 	outcomes: Array<{ stage: number; outcome: BuildStageOutcome; evidence: string; at: string }>;
@@ -256,7 +278,7 @@ export function buildContextText(parent: Pick<ChatRecord, "messages" | "tree" | 
 		"[Build branch context] — the learner opened this hands-on build branch from their lesson. This is injected session context, not the learner speaking.",
 		`Lesson: ${parent.title}`,
 		`Lesson goal (the learner's opening message):\n${lessonGoal(messages) || "(none recorded)"}`,
-		`Main session probe assessment (already established — do not re-probe these):\n${probeAssessment(messages) || "(the main session has no probe assessment yet)"}`,
+		`Main session probe assessment (what the learner KNOWS about the concepts — do not re-ask these; it says nothing about how much they can BUILD, which the customize phase still measures):\n${probeAssessment(messages) || "(the main session has no probe assessment yet)"}`,
 		nodes.length ? `Lesson plan:\n${nodes.map((n) => `- ${n.id}: ${n.title}${n.summary ? ` — ${n.summary}` : ""}`).join("\n")}` : "Lesson plan: (none yet)",
 		`Branched at step: ${nodeTitle}${nodeId ? ` (${nodeId})` : ""}`,
 		`The lesson so far, up to that step:\n${lessonText || "(nothing taught yet)"}`,

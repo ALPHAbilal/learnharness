@@ -68,7 +68,7 @@ export interface BuildToolContext {
 }
 
 export const BUILD_TOOL_NAMES = [
-	"build_plan", "stage_start", "run_tests", "stage_complete", "terminal_run", "terminal_read",
+	"set_level", "build_plan", "stage_start", "run_tests", "stage_complete", "terminal_run", "terminal_read",
 	"file_list", "file_read", "file_write", "return_to_lesson",
 ] as const;
 
@@ -95,6 +95,19 @@ function tool<P extends TSchema>(name: string, description: string, parameters: 
 }
 
 const relPath = (description: string) => Type.String({ minLength: 1, description });
+
+const setLevelInput = Type.Object({
+	level: Type.Union([Type.Literal("guided"), Type.Literal("half"), Type.Literal("scratch")], {
+		description: "guided = small blanks inside scaffolded files; half = the learner writes whole functions, starter files give structure; scratch = an empty file, the learner builds everything.",
+	}),
+	evidence: Type.String({
+		minLength: 1,
+		description: "What the learner showed in the build probe that supports this level: their answers and anything they did, briefly quoted.",
+	}),
+	learnerAgreed: Type.Boolean({
+		description: "true only if the learner explicitly agreed to this level in their own reply. Proposing a level is not agreement.",
+	}),
+});
 
 const buildPlanInput = Type.Object({
 	stages: Type.Array(
@@ -160,11 +173,35 @@ export function buildTools(ctx: BuildToolContext): Record<string, AgentTool<any>
 	};
 
 	return healToolRecord({
+		set_level: tool("set_level",
+			"Record the build level the learner agreed to, with the hands-on evidence from your build probe. Required before build_plan. Call it only after the learner said yes to the level in their own words; re-call it if they later ask for easier or harder.",
+			setLevelInput,
+			({ level, evidence, learnerAgreed }) => {
+				refuseIfReturned(branchOf());
+				if (level !== "guided" && level !== "half" && level !== "scratch") {
+					return { ok: false, error: `Unknown level "${String(level)}". Use guided, half or scratch.` };
+				}
+				if (!evidence?.trim()) return { ok: false, error: "Give the evidence from the build probe that supports this level." };
+				if (learnerAgreed !== true) {
+					return { ok: false, error: "The learner has not agreed to a level yet. Propose the level with your reasons, wait for their reply, and call set_level once they agree." };
+				}
+				const next = update((s) => {
+					s.calibration = { level, evidence: evidence.trim(), at: new Date().toISOString() };
+				});
+				return { ok: true, level: next.calibration!.level, note: "Level recorded. Now shape the build plan to this level and call build_plan." };
+			}),
+
 		build_plan: tool("build_plan",
-			"Set or replace the build plan: the ordered stages the learner sees in the stage panel. Call at the end of the customize phase, then present the plan and wait for the learner's acceptance; re-call to apply requested changes.",
+			"Set or replace the build plan: the ordered stages the learner sees in the stage panel. Refused until set_level has recorded the agreed level. Call at the end of the customize phase, then present the plan and wait for the learner's acceptance; re-call to apply requested changes.",
 			buildPlanInput,
 			({ stages }) => {
 				refuseIfReturned(branchOf());
+				if (!state().calibration) {
+					return {
+						ok: false,
+						error: "No build level is set. First run the build probe (hands-on questions, one at a time), propose a level (guided / half / scratch) with your reasons, get the learner's yes, then call set_level.",
+					};
+				}
 				const next = update((s) => {
 					s.plan = stages.map((st) => ({ title: st.title.trim(), goal: st.goal.trim() }));
 				});
@@ -296,12 +333,14 @@ export function buildTools(ctx: BuildToolContext): Record<string, AgentTool<any>
 			({ summary }) => {
 				const branch = branchOf();
 				refuseIfReturned(branch);
+				const calibration = state().calibration;
+				const levelLine = calibration ? `Build level: ${calibration.level} (agreed with the learner; evidence: ${calibration.evidence})\n\n` : "";
 				const entry: BuildReturnEntry = {
 					id: `ret_${ctx.chatId}`,
 					branchId: ctx.chatId,
 					nodeId: branch.parentNodeId,
 					nodeTitle: branch.parentNodeTitle,
-					summary: summary.trim(),
+					summary: `${levelLine}${summary.trim()}`,
 					createdAt: new Date().toISOString(),
 					delivered: false,
 				};

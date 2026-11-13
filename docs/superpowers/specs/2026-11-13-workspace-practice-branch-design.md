@@ -92,6 +92,7 @@ Example (step "HTTP is plain text"): stage 1 accept a socket connection and prin
 
 ### Coach tools
 
+- `set_level` — record the build level the learner agreed to (guided / half / scratch) with its evidence; required before `build_plan` (added later the same day: [build calibration](2026-11-13-build-calibration.md)).
 - `build_plan` — set/replace the stage list (validated; drives the stage panel). Acceptance is the learner's natural reply, as with `plan_init`.
 - `stage_start` — pose a stage: hook/concept/tests/notes text, starter files, test file + test command. Commits and locks the test file; one active stage at a time.
 - `run_tests` — run the active stage's test command (also the **Run tests** button); returns pass/fail, bounded output, exit code. Each run is recorded with its attribution and the learner's prediction, if any.

@@ -42,6 +42,7 @@ interface WorkspaceFile {
 interface WorkspaceState {
 	branch: { parentChatId: string; parentNodeTitle: string; folder: string; phase: "customize" | "build" | "returned" };
 	shell: string;
+	level: "guided" | "half" | "scratch" | null;
 	plan: Array<{ title: string; goal: string }>;
 	active: { index: number; hook: string; concept: string; tests: string; notes: string | null; testPath: string; testCommand: string } | null;
 	outcomes: Array<{ stage: number; outcome: "passed" | "passed-shaky" | "skipped"; evidence: string }>;
@@ -170,7 +171,8 @@ export function WorkspacePanel({ chatId, busy, onDone }: { chatId: string; busy:
 			<div className="flex h-15 shrink-0 items-center gap-2 border-b border-border px-3">
 				<div className="min-w-0 flex-1">
 					<div className="truncate font-ui text-[10px] uppercase tracking-wider text-muted-foreground">
-						Workspace · {state.shell} · {state.branch.phase === "customize" ? "planning the build" : state.branch.phase}
+						Workspace · {state.shell} · {state.branch.phase === "customize" ? (state.level ? "planning the build" : "finding your level") : state.branch.phase}
+						{state.level && <span data-testid="build-level"> · level: {state.level}</span>}
 					</div>
 					<div className="truncate font-mono text-[11px] text-muted-foreground/80" title={state.branch.folder}>{state.branch.folder}</div>
 				</div>
@@ -193,7 +195,7 @@ export function WorkspacePanel({ chatId, busy, onDone }: { chatId: string; busy:
 			{/* Stages */}
 			<div className="shrink-0 border-b border-border px-3 py-2" data-testid="build-stages">
 				{state.plan.length === 0 ? (
-					<p className="text-xs text-muted-foreground">No build plan yet — talk with the coach about what to build. The stages appear here once you agree.</p>
+					<p className="text-xs text-muted-foreground">No build plan yet — the coach first checks what you can build (a few short questions), agrees a level with you, then plans the stages.</p>
 				) : (
 					<ol className="flex flex-wrap gap-1.5">
 						{state.plan.map((stage, i) => {

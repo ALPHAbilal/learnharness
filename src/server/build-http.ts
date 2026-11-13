@@ -96,6 +96,7 @@ export function workspaceStateResponse(id: string): Response {
 	return json({
 		branch,
 		shell: shellLabel(buildShellKind()),
+		level: state.calibration?.level ?? null,
 		plan: state.plan,
 		active: state.active && {
 			index: state.active.index,

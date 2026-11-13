@@ -64,10 +64,60 @@ const stage1 = {
 	testCommand: "bash tests/test_stage_1.sh",
 };
 
+const LEVEL = { level: "guided", evidence: "wrote hi(name) with help; never ran a .py file from a terminal", learnerAgreed: true };
+
+describe("build calibration (level before plan)", () => {
+	it("refuses build_plan until a level is set", async () => {
+		const t = setup();
+		const refused = await t.call("build_plan", { stages: [{ title: "A", goal: "a" }] });
+		assert.equal(refused.ok, false);
+		assert.match(String(refused.error), /No build level is set/);
+	});
+
+	it("refuses a level the learner has not agreed to", async () => {
+		const t = setup();
+		const refused = await t.call("set_level", { ...LEVEL, learnerAgreed: false });
+		assert.equal(refused.ok, false);
+		assert.match(String(refused.error), /not agreed/);
+		assert.equal((await t.call("build_plan", { stages: [{ title: "A", goal: "a" }] })).ok, false, "still gated");
+	});
+
+	it("records the agreed level, unlocks the plan, and can be changed later", async () => {
+		const t = setup();
+		const set = await t.call("set_level", LEVEL);
+		assert.equal(set.ok, true);
+		assert.equal(set.level, "guided");
+		assert.equal((await t.call("build_plan", { stages: [{ title: "A", goal: "a" }] })).ok, true);
+		assert.equal((await t.call("set_level", { ...LEVEL, level: "half", evidence: "finished stage 1 alone" })).ok, true);
+		const saved = buildWorkspacePort().readState(t.child.id).calibration;
+		assert.equal(saved?.level, "half");
+		assert.equal(saved?.evidence, "finished stage 1 alone");
+	});
+
+	it("rejects an unknown level", async () => {
+		const t = setup();
+		const refused = await t.call("set_level", { ...LEVEL, level: "expert" });
+		assert.equal(refused.ok, false);
+		assert.match(String(refused.error), /Unknown level/);
+		assert.equal((await t.call("set_level", { ...LEVEL, evidence: "  " })).ok, false, "evidence is required");
+		assert.equal(buildWorkspacePort().readState(t.child.id).calibration ?? null, null);
+	});
+
+	it("attaches the agreed level to the return summary", async () => {
+		const t = setup();
+		await t.call("set_level", LEVEL);
+		await t.call("return_to_lesson", { summary: "shaky: sockets" });
+		const summary = chatStore.getChat(t.parent.id)!.buildReturns![0]!.summary;
+		assert.match(summary, /^Build level: guided \(agreed with the learner; evidence: wrote hi\(name\)/);
+		assert.match(summary, /shaky: sockets$/);
+	});
+});
+
 describe("build coach tools", () => {
 	it("refuses a stage before a plan, then poses and locks it", async () => {
 		const t = setup();
 		assert.equal((await t.call("stage_start", stage1)).ok, false);
+		await t.call("set_level", LEVEL);
 		assert.equal((await t.call("build_plan", { stages: [{ title: "Bytes", goal: "print raw bytes" }, { title: "Flask", goal: "map to Flask" }] })).ok, true);
 		const posed = await t.call("stage_start", stage1);
 		assert.equal(posed.ok, true);
@@ -85,6 +135,7 @@ describe("build coach tools", () => {
 
 	it("never overwrites the learner's existing files with starter files", async () => {
 		const t = setup();
+		await t.call("set_level", LEVEL);
 		await t.call("build_plan", { stages: [{ title: "A", goal: "a" }, { title: "B", goal: "b" }] });
 		await t.call("stage_start", stage1);
 		fs.writeFileSync(path.join(t.folder, "server.py"), "learner work\n");
@@ -96,6 +147,7 @@ describe("build coach tools", () => {
 
 	it("runs and completes stages with outcomes", { skip: !hasBash }, async () => {
 		const t = setup();
+		await t.call("set_level", LEVEL);
 		await t.call("build_plan", { stages: [{ title: "A", goal: "a" }] });
 		await t.call("stage_start", stage1);
 		const run = await t.call("run_tests", {});
@@ -116,6 +168,7 @@ describe("build coach tools", () => {
 		assert.deepEqual(t.commands, ["python3 --version"]);
 		assert.equal((await t.call("file_write", { path: "../outside.txt", content: "x" })).ok, false);
 		assert.equal((await t.call("file_read", { path: "/etc/hostname" })).ok, false);
+		await t.call("set_level", LEVEL);
 		await t.call("build_plan", { stages: [{ title: "A", goal: "a" }] });
 		assert.equal((await t.call("stage_start", { ...stage1, testCommand: "bash ../x.sh" })).ok, false);
 		assert.equal((await t.call("terminal_read", {})).transcript, "[YOU typed] $ ls");
@@ -143,6 +196,9 @@ describe("build coach agent", () => {
 		assert.match(prompt, /# The method/);
 		assert.doesNotMatch(prompt, /\b\d+\s*(?:minutes|hours)\b/i, "no time estimates");
 		assert.ok(!prompt.includes("20-question-tools"), "no question mechanics");
+		assert.match(prompt, /calibrate, never assume/);
+		assert.match(prompt, /`set_level`/);
+		assert.doesNotMatch(prompt, /never probe it again/, "the old no-probe rule is gone");
 	});
 	it("builds with the workspace tool registry", () => {
 		const t = setup();
@@ -151,7 +207,7 @@ describe("build coach agent", () => {
 			terminal: () => ({ runAiCommand: async () => ({ output: "", exitCode: 0, running: false }), transcript: () => "" }),
 		}, { engine: { model: { provider: "faux", id: "faux", api: "faux" }, level: "off", streamFn: (() => { throw new Error("unused"); }) } as never });
 		const names = agent.state.tools.map((tool) => tool.name).sort();
-		for (const name of ["build_plan", "stage_start", "run_tests", "stage_complete", "terminal_run", "terminal_read", "file_list", "file_read", "file_write", "return_to_lesson", "read"]) {
+		for (const name of ["set_level", "build_plan", "stage_start", "run_tests", "stage_complete", "terminal_run", "terminal_read", "file_list", "file_read", "file_write", "return_to_lesson", "read"]) {
 			assert.ok(names.includes(name), name);
 		}
 		assert.ok(!names.includes("quiz") && !names.includes("problem"));
