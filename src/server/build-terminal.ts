@@ -19,6 +19,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { stripAnsi, tail } from "../core/build-branch.ts";
 import { interactiveShellSpec, killProcessTree, shellCommandSpec, shellLabel } from "./build-shell.ts";
@@ -139,6 +140,8 @@ function ptyShell(mod: PtyModule, folder: string, cols: number, rows: number): P
 
 export class BuildTerminal {
 	readonly folder: string;
+	/** Identifies this terminal instance (watermarks are per instance). */
+	readonly epoch = randomUUID();
 	private shell: PtyLike | null = null;
 	private chunks: TerminalChunk[] = [];
 	private seq = 0;

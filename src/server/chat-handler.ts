@@ -1,5 +1,6 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import {
+	createBuildAgent,
 	createPracticeAgent,
 	createProberAgent,
 	createTeacherAgent,
@@ -58,6 +59,9 @@ import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-ser
 import { hasProbeDone, hasUnresolvedQuestion, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf } from "../core/native-messages.ts";
 import { samePluginQuestionOccurrence } from "../core/plugin-questions.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
+import { buildActivityCargo, buildReturnCargo, commitBuildCargo, type BuildTurnCargo } from "./build-turn.ts";
+import { buildWorkspacePort } from "./build-workspace.ts";
+import { existingTerminal as existingBuildTerminal, stopBranchProcesses, terminalFor } from "./build-terminal.ts";
 import { ensureCompacted, kickCompaction, effectiveThresholdTokens, projectedContextTokens, compactionInFlight } from "./compaction.ts";
 import { COMPACTION_RESERVE_TOKENS } from "../core/compaction.ts";
 import { catalogContextLimits, refreshConnectionCatalog } from "./model-catalog.ts";
@@ -364,7 +368,7 @@ export async function handleChatInput(
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
 	const contextWindow = catalogContextLimits().get(modelIdForCompaction);
 	const thresholdTokens = effectiveThresholdTokens(effective.compaction?.thresholdTokens, contextWindow);
-	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : "teacher").length / 4);
+	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : record.kind === "build" ? "build" : "teacher").length / 4);
 	const estimateModel = effective.compaction.includeReasoning ? conversationEngine.model : undefined;
 	const fitsSideContext = (messages: readonly LhMessage[]) => {
 		const live = messages.filter((message) => (message as { role: string }).role !== "system");
@@ -389,7 +393,8 @@ export async function handleChatInput(
 			engine: compactionEngine,
 			canStart: () => !isTurnRunning(chatId) && connectionBackgroundAllowed(conversation.provider),
 			modelId: modelIdForCompaction,
-			kind: record.kind === "practice" ? "practice" : hasProbeDone(record.messages) ? "teach" : "probe",
+			// Build branches compact with the practice wording (no teaching phases).
+			kind: record.kind === "practice" || record.kind === "build" ? "practice" : hasProbeDone(record.messages) ? "teach" : "probe",
 			includeReasoning: effective.compaction.includeReasoning,
 			thresholdTokens,
 			systemPromptTokens,
@@ -575,6 +580,19 @@ export async function handleChatInput(
 	// Prospectively check new exchanges from ALL threads for early automatic
 	// refusal. This snapshot does not authorize the final assembled request;
 	// SDK preparation re-collects live text and validates queued steering too.
+	// BUILD BRANCHES (2026-11-13): learner turns carry branch cargo as
+	// ordinary write-ahead appends — a build session's new workspace
+	// activity (terminal, saves, test runs), or a teaching session's queued
+	// build-return summaries. Never between a pending question call and
+	// its result: an answer that leaves a question open delivers nothing.
+	let buildCargo: BuildTurnCargo | null = null;
+	if (input.type === "text" || input.type === "answer" || input.type === "plugin-question-answer") {
+		const current = stores.chatStore.getChat(chatId) ?? record;
+		buildCargo = record.kind === "build"
+			? buildActivityCargo(current, existingBuildTerminal(chatId))
+			: (record.kind ?? "teach") === "teach" && !hasUnresolvedQuestion([...record.messages, ...appends]) ? buildReturnCargo(current) : null;
+		if (buildCargo) appends = input.type === "text" ? [...buildCargo.markers, ...appends] : [...appends, ...buildCargo.markers];
+	}
 	const sideContextSnapshots = sideContext.snapshot(chatId);
 	const afterInput = [...record.messages, ...appends];
 	const sideQuestions = hasUnresolvedQuestion(afterInput) ? [] : sideConversationEntries({
@@ -605,6 +623,8 @@ export async function handleChatInput(
 			stores.chatStore.saveMessages(chatId, merged);
 			inputSaved = true;
 		}
+		// Cargo is delivered once its markers are durable.
+		if (buildCargo && inputSaved) commitBuildCargo(chatId, buildCargo, stores.chatStore);
 	} catch (err) {
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 		return new Response("Your input could not be saved. Please try again.", { status: 500 });
@@ -731,8 +751,20 @@ export async function handleChatInput(
 	// split, no plan/question/job tools; the whole registry is
 	// problem + conclude. buildAgent stays honored (the test seam is
 	// uniform across kinds).
+	const buildBranch = record.kind === "build" ? record.branch : undefined;
 	const constructed: TeachingAgent = buildAgent
 		? buildAgent({ ...agentOpts, teaching })
+		: buildBranch
+			? createBuildAgent(
+					{
+						chatId,
+						chatStore: stores.chatStore,
+						workspace: buildWorkspacePort(),
+						terminal: () => terminalFor(chatId, buildBranch.folder),
+						stopProcesses: () => stopBranchProcesses(chatId),
+					},
+					agentOpts,
+				)
 		: record.kind === "practice"
 			? createPracticeAgent(
 					{
@@ -884,7 +916,7 @@ export async function handleChatInput(
 				// PRACTICE (owner, 2026-10-04): practice sessions write nothing —
 				// no extraction, no graph, no coverage (v1: the session itself
 				// is the deliverable).
-				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && extractionEnabled(effective.graph)) {
+				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && record.kind !== "build" && extractionEnabled(effective.graph)) {
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
@@ -937,13 +969,13 @@ export async function handleChatInput(
 							engine: kickEngine,
 							canStart: () => !isTurnRunning(chatId) && connectionBackgroundAllowed(spec.provider),
 							modelId: kickModelId,
-							kind: freshRecord.kind === "practice" ? "practice" : hasProbeDone(freshRecord.messages) ? "teach" : "probe",
+							kind: freshRecord.kind === "practice" || freshRecord.kind === "build" ? "practice" : hasProbeDone(freshRecord.messages) ? "teach" : "probe",
 							includeReasoning: fresh.compaction.includeReasoning,
 							thresholdTokens: effectiveThresholdTokens(
 								fresh.compaction?.thresholdTokens,
 								catalogContextLimits().get(kickModelId),
 							),
-							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher").length / 4),
+							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : freshRecord.kind === "build" ? "build" : "teacher").length / 4),
 						};
 					}, chatId);
 			},

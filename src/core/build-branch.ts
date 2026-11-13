@@ -75,6 +75,9 @@ export interface BuildState {
 	 *  handed to the coach (build-activity markers). */
 	seenEventSeq: number;
 	seenTerminalSeq: number;
+	/** The terminal instance the seq belongs to (a server restart starts a
+	 *  new terminal whose numbering restarts). */
+	seenTerminalEpoch?: string;
 }
 
 export function emptyBuildState(): BuildState {
