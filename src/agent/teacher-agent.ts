@@ -20,6 +20,7 @@ import { healToolRecord, withArgumentHeal } from "./tools/heal.ts";
 import { sendToUserApplies, sendToUserTool } from "./tools/send-to-user.ts";
 import { makeNarrationGuard, narrationGuardApplies, SEND_TO_USER_DELIVERY_RULE } from "./narration-guard.ts";
 import { createReadTool, readTool } from "./tools/read.ts";
+import { BUILD_TOOL_NAMES, buildTools, type BuildToolContext } from "./tools/build.ts";
 import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
 import { QUESTION_TOOLS, TOGGLEABLE_TOOLS, type EnabledTools } from "../core/pending.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
@@ -54,13 +55,14 @@ import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./p
 
 /** Which agent's prompt directory to compose. Practice (2026-10-04)
  *  composes ONLY its own directory — see prompt-segments.ts. */
-export type AgentKind = "prober" | "teacher" | "practice";
+export type AgentKind = "prober" | "teacher" | "practice" | "build";
 
 /** Reserve conversation builtins even when role/mechanics/settings gates hide them.
  * New builtin names must join this catalog; actual turn tools are reserved too. */
 export const CONVERSATION_TOOL_NAMES = Object.freeze([
 	...QUESTION_TOOLS, ...TOGGLEABLE_TOOLS, "probe_done", "read", "ls", "find", "grep",
 	"plan_init", "list_sessions", "list_propositions", "problem", "conclude", sendToUserTool.name,
+	...BUILD_TOOL_NAMES,
 ] as const);
 
 // P2 (2026-09-19): segment discovery + override resolution live in ONE
@@ -101,6 +103,7 @@ const composedInstructions: Record<AgentKind, string> = {
 	prober: composeInstructions("prober"),
 	teacher: composeInstructions("teacher"),
 	practice: composeInstructions("practice"),
+	build: composeInstructions("build"),
 };
 
 // Money channel (wave 4): the chat-handler passes a per-turn collector;
@@ -225,7 +228,9 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 			? [withArgumentHeal(sendToUserTool)]
 			: []),
 	];
-	const contributions = opts.tools === undefined && opts.chatId && opts.pluginContributions
+	// Build branches (2026-11-13) take no plugin contributions: plugins
+	// declare prober/teacher/practice surfaces only.
+	const contributions = kind !== "build" && opts.tools === undefined && opts.chatId && opts.pluginContributions
 		? opts.pluginContributions({ chatId: opts.chatId, agent: kind }, [...CONVERSATION_TOOL_NAMES, ...builtinTools.map(tool => tool.name)])
 		: undefined;
 	const questionLedger = contributions?.questionTypes?.length && opts.chatId
@@ -405,8 +410,22 @@ export function createPracticeAgent(ctx: PracticeToolContext, opts: AgentBuildOp
 	return baseAgentOptions("practice", opts, Object.values(practiceTools(ctx, gate)), undefined, { gate, graphNodes: ctx.graphNodes });
 }
 
+/**
+ * The BUILD COACH (build branches, 2026-11-13 — docs/superpowers/specs/
+ * 2026-11-13-workspace-practice-branch-design.md): built from turn 1 of a
+ * kind:"build" session. No question tools, no plan tools — the registry is
+ * the workspace set (tools/build.ts) plus read-only learner-file tools; the
+ * doctrine prompt (prompts/build/) carries the method. Turns end on plain
+ * prose: the coach gives the learner one task and stops.
+ */
+export function createBuildAgent(ctx: BuildToolContext, opts: AgentBuildOptions = {}) {
+	if (opts.tools !== undefined) return baseAgentOptions("build", opts, Object.values(opts.tools));
+	return baseAgentOptions("build", opts, Object.values(buildTools(ctx)));
+}
+
 export type ProberAgent = ReturnType<typeof createProberAgent>;
 export type TeacherAgent = ReturnType<typeof createTeacherAgent>;
 export type PracticeAgent = ReturnType<typeof createPracticeAgent>;
-export type TeachingAgent = ProberAgent | TeacherAgent | PracticeAgent;
+export type BuildAgent = ReturnType<typeof createBuildAgent>;
+export type TeachingAgent = ProberAgent | TeacherAgent | PracticeAgent | BuildAgent;
 

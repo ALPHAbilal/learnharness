@@ -19,6 +19,11 @@
 import type { BuildBranch, ChatRecord } from "./contracts/chat.ts";
 import { newMessageId, type LhMarkerMessage, type LhMessage } from "./native-messages.ts";
 
+/** A refused workspace operation (path outside the folder, locked test,
+ *  missing file). Tools report its message to the model; routes map it
+ *  to 400. */
+export class WorkspaceError extends Error {}
+
 // ─── stage state (persisted by the server beside the branch) ────────────────
 
 export interface BuildStage {

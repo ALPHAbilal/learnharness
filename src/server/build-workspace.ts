@@ -30,6 +30,7 @@ import {
 	type BuildState,
 	type BuildTestRun,
 	type BuildWorkspaceEvent,
+	WorkspaceError,
 } from "../core/build-branch.ts";
 import { killProcessTree, shellCommandSpec } from "./build-shell.ts";
 
@@ -44,7 +45,7 @@ const RUN_OUTPUT_LIMIT = 8_000;
 const MAX_EVENTS = 200;
 const MAX_RUNS = 100;
 
-export class WorkspaceError extends Error {}
+export { WorkspaceError };
 
 // ─── folders ─────────────────────────────────────────────────────────────────
 
@@ -302,4 +303,19 @@ export async function runStageTests(branchId: string, folder: string, by: "you" 
 		recordEvent(s, by, "test-run", `Stage ${active.index + 1} tests ${run.passed ? "PASSED" : "FAILED"} (exit ${run.exitCode ?? "none"})\n${tail(run.output, 2_000)}`);
 	}, root);
 	return run;
+}
+
+/** The tools' workspace port over this module (agent/tools/build.ts). */
+export function buildWorkspacePort(root = STATE_ROOT) {
+	return {
+		resolveInside,
+		exists: (absolutePath: string) => fs.existsSync(absolutePath),
+		listFiles,
+		readFile: readWorkspaceFile,
+		writeFile: writeWorkspaceFile,
+		writeTestFile,
+		readState: (branchId: string) => readState(branchId, root),
+		updateState: (branchId: string, update: (state: BuildState) => BuildState | void) => updateState(branchId, update, root),
+		runStageTests: (branchId: string, folder: string, by: "you" | "ai") => runStageTests(branchId, folder, by, root),
+	};
 }
