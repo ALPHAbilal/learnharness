@@ -167,10 +167,10 @@ export interface AgentBuildOptions {
 	 *  <chatId>.jsonl via providerEventObserver — the GLM-truncation /
 	 *  DeepSeek-id incident layer. Absent or env-off → no observer. */
 	chatId?: string;
-	/** This chat's own folder (ChatRecord.workspaceDir). Present → the
-	 *  teacher, practice and infinite agents gain run_command + write_file
-	 *  and the workspace instruction block. Absent (chats born before
-	 *  workspaces) → neither. The prober only measures: it never gets them. */
+	/** This chat's own folder (ChatRecord.workspaceDir). Present → every
+	 *  conversation agent gains run_command + write_file and the workspace
+	 *  instruction block; the prober uses them for its one write measurement.
+	 *  Absent (chats born before workspaces) → neither. */
 	workspaceDir?: string;
 }
 
@@ -226,7 +226,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// ("practice" is not a ModelRole) honest about that.
 	const engine = opts.engine ?? piEngineFor(kind as "prober" | "teacher");
 	// Caller-owned test registries stay exactly as handed in.
-	const workspaceDir = opts.tools === undefined && kind !== "prober" ? opts.workspaceDir : undefined;
+	const workspaceDir = opts.tools === undefined ? opts.workspaceDir : undefined;
 	const stopper = makeQuestionStopper(kind);
 	const narrationGuard = narrationGuardApplies(kind, engine.model, opts.tools !== undefined);
 	const narrationHooks = narrationGuard ? makeNarrationGuard() : undefined;

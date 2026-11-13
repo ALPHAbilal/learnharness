@@ -329,7 +329,9 @@ export function Chat({
 	const submissionMounted = useRef(true);
 	useEffect(() => { submissionMounted.current = true; return () => { submissionMounted.current = false; submissionRunner.dispose(); }; }, [submissionRunner]);
 	useEffect(() => () => submissionRunner.dispose(), [surfaceTarget, submissionRunner]);
-	const inputViewReader = useRef<(() => PluginSessionViewInput) | null>(null) as SessionInputViewReader;
+	// Reader bridges are plain objects in state, not useRef: React's dev server
+	// render seals refs, and these carry an extra `changed` callback.
+	const [inputViewReader] = useState<SessionInputViewReader>(() => ({ current: null }));
 	const [, refreshViewContext] = useState(0);
 	const notifyViewChanged = useCallback(() => { if (submissionMounted.current) refreshViewContext(value => value + 1); }, []);
 	inputViewReader.changed = notifyViewChanged;
@@ -2511,9 +2513,10 @@ export function DockOverlay({
 	const readingInputRef = useRef<HTMLDivElement>(null);
 	const ownsDock = !!pending || !!pluginQuestion || unreadablePlugin || !!practice;
 	const initialPendingRef = useRef(pendingId);
-	const nativeViewReader = useRef<(() => NativeQuestionViewState) | null>(null) as ViewReaderRef<NativeQuestionViewState>;
-	const practiceViewReader = useRef<(() => string) | null>(null) as ViewReaderRef<string>;
-	const customViewReader = useRef<(() => { available: boolean }) | null>(null) as ViewReaderRef<{ available: boolean }>;
+	// Plain objects in state, not useRef (dev server render seals refs; see inputViewReader).
+	const [nativeViewReader] = useState<ViewReaderRef<NativeQuestionViewState>>(() => ({ current: null }));
+	const [practiceViewReader] = useState<ViewReaderRef<string>>(() => ({ current: null }));
+	const [customViewReader] = useState<ViewReaderRef<{ available: boolean }>>(() => ({ current: null }));
 	nativeViewReader.changed = practiceViewReader.changed = customViewReader.changed = viewReader?.changed;
 
 	// Teach-question ARRIVAL state, applied during render — BEFORE the

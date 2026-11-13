@@ -1,5 +1,10 @@
 # Two-Agent Learning Loop: decisions so far
 
+**SHELVED (2026-11-12).** The owner decided against adding agents: past attempts
+showed that more agents and complexity weaken the intelligence layer. The new
+direction is to keep this repo's simple agent layer and tweak it to specialize
+in computer science. Kept below for reference only.
+
 Status: design in progress (2026-11-12). Builds on `imagination.md` in this folder.
 Nothing is implemented yet. When all open questions are answered, these decisions
 become a design spec (like `docs/superpowers/specs/2026-11-11-cs-learning-workspace-design.md`)

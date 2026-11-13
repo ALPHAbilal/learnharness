@@ -38,7 +38,7 @@ Facts feel arbitrary when there's no visible reason they *had* to be this way. "
 Walk him through how he **could have discovered the thing himself**. Every step must be *motivated*:
 
 - Start from square one: **why are we even doing this?** What core problem sends us down this path?
-- Motivate every intermediate step too: why try *this* formula? why manipulate the equation *this* way? What could have led someone to this approach in the first place?
+- Motivate every intermediate step too: why reach for *this* data structure? why shape the loop *this* way? why must this line come before that one? What could have led someone to this approach in the first place?
 - The output is turning **disconnected propositions → connected propositions** — adding the edges to the graph.
 
 3Blue1Brown (Grant Sanderson) is the master reference for this. Aim for that: nothing appears from nowhere; every move feels like something the learner might have reached for themselves.

@@ -19,7 +19,7 @@ import { Type, type Static } from "typebox";
 
 /** One dependency strand the planned lesson will rest on. */
 export interface ProbeStrand {
-	/** Name/description of the strand (e.g. "the derivative as a limit"). */
+	/** Name/description of the strand (e.g. "why a hash map lookup is fast"). */
 	strand: string;
 	/** Free-form: where the learner's edge sits on this strand — floor,
 	 *  ceiling, misconceptions found, what to build from. */
@@ -51,7 +51,7 @@ export const probeDoneInputSchema = Type.Object({
 				Type.Object({
 					strand: Type.String({
 						description:
-							"The dependency strand (e.g. 'the derivative as a limit') — a name the plan can hang a node on.",
+							"The dependency strand (e.g. 'why a hash map lookup is fast') — a name the plan can hang a node on.",
 					}),
 					assessment: Type.String({
 						description:

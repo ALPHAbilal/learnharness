@@ -728,7 +728,7 @@ export async function handleChatInput(
 		// prompt fresh per turn, swapping in any enabled override segments.
 		promptSwitches: effective.agent.prompts,
 		// WORKSPACES: the chat's own folder, stamped at birth. Present →
-		// the teacher/practice/infinite agents gain run_command + write_file.
+		// every conversation agent, prober included, gains run_command + write_file.
 		// Chats born before workspaces have none and run exactly as before.
 		workspaceDir: record.workspaceDir,
 	};

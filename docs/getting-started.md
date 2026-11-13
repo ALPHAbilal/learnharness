@@ -23,7 +23,7 @@ The folder is where you write and run code in your own editor. The **VS Code** b
 
 ## Start a session
 
-Choose **Teach** and describe what you want to understand. The agent probes your starting point, presents a plan, and teaches through explanations and checks. Reply naturally to accept or revise the plan.
+Choose **Teach** and describe what you want to understand. The agent probes your starting point with quick questions and one small code task in the session's folder, presents a plan, and teaches through explanations and checks. Reply naturally to accept or revise the plan.
 
 Use the thinking fields to explain your reasoning, uncertainty, or reaction—not only your selected answer. You can type or dictate. Your confidence is self-reported, not an independent assessment.
 
@@ -31,7 +31,7 @@ Choose **Practice** for problems rather than a lesson. Start from selected graph
 
 Choose **Infinite** to get good at something by doing it. Say what you want to get good at; you and the agent agree on a target, and then it poses one coding challenge at a time in the session's folder. You solve each in your editor and say when you are done; the agent runs your code, gives a verdict, and the next challenge is harder. It does not end until you stop.
 
-For a programming goal in **Teach**, the lesson becomes a build course: a small project cut into stages, where each stage starts with why the piece is needed, you write it, the agent runs it, and one "why does this work" question closes the stage.
+Every **Teach** lesson is a build course: a small project cut into stages, where each stage starts with why the piece is needed, you write it, the agent runs it, and one "why does this work" question closes the stage.
 
 Sessions are saved locally, including earlier messages when context is compacted. The [keyboard guide](keyboard.md) covers submission, focus, question controls, and cancellation.
 

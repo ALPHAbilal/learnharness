@@ -1,6 +1,6 @@
 # Build courses — programming is learned by building
 
-When the goal is a programming or computer-science one — a language, a tool, a protocol, a system, "how does X actually work" where X is software — the lesson is a **build course**: the learner builds a small working version of the thing with their own hands, in stages, in their own editor. Reading about a shell is not understanding a shell; writing the loop that reads a line and runs it is. Everything in the method still applies — this section says what the method looks like when the subject is code.
+Every lesson is a **build course**. Whatever the goal — a language, a tool, a protocol, a system, "how does X actually work" where X is software — the learner builds a small working version of the thing with their own hands, in stages, in their own editor. When the goal is a concept rather than a thing (recursion, pointers, hashing, Big-O), the project is the smallest real program whose building forces that concept. Reading about a shell is not understanding a shell; writing the loop that reads a line and runs it is. Everything in the method still applies — this section says what the method looks like when the subject is code.
 
 A build course needs this chat's folder (the *This chat's folder* section at the end of these instructions). If that section is absent, this chat has no folder: teach the same ideas with code inside the lesson and skip everything below about files and commands.
 

@@ -1,9 +1,9 @@
 /**
  * THE INFINITE AGENT and the workspace wiring: Infinite composes its own
  * prompt directory (no teaching base) over the practice registry; a chat
- * with a folder gives the teacher, practice and infinite agents
- * run_command + write_file and the folder's instruction block; a chat
- * without one, and the prober always, get neither. Every tool of a real
+ * with a folder gives every conversation agent (prober, teacher,
+ * practice, infinite) run_command + write_file and the folder's
+ * instruction block; a chat without one gets neither. Every tool of a real
  * conversation is wrapped by the tool log.
  */
 import assert from "node:assert/strict";
@@ -92,15 +92,16 @@ describe("workspace wiring", () => {
 		assert.doesNotMatch(without.state.systemPrompt, /^# This chat's folder/m);
 	});
 
-	it("the teacher gains them; the prober never does", () => {
+	it("the teacher and the prober gain them", () => {
 		const chatStore = { getChat: () => ({ messages: [], tree: undefined }) } as never;
 		const jobStore = {} as never;
 		const teacher = createTeacherAgent({ chatId: "chat_t", chatStore, jobStore, spawn: () => {}, searchAvailable: () => false }, { engine, chatId: "chat_t", workspaceDir: DIR });
 		assert.ok(toolNames(teacher).includes("run_command") && toolNames(teacher).includes("write_file"));
 		assert.match(teacher.state.systemPrompt, /^# This chat's folder/m);
 		const prober = createProberAgent({ chatId: "chat_t", chatStore, jobStore, spawn: () => {}, searchAvailable: () => false, deliver: () => {} }, { engine, chatId: "chat_t", workspaceDir: DIR });
-		assert.ok(!toolNames(prober).includes("run_command") && !toolNames(prober).includes("write_file"));
-		assert.doesNotMatch(prober.state.systemPrompt, /^# This chat's folder/m);
+		assert.ok(toolNames(prober).includes("run_command") && toolNames(prober).includes("write_file"));
+		assert.match(prober.state.systemPrompt, /^# This chat's folder/m);
+		assert.match(prober.state.systemPrompt, /## 5\. One small write — in his folder/);
 	});
 
 	it("a caller-owned test registry is left exactly as handed in", () => {

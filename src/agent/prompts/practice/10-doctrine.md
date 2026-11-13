@@ -86,12 +86,12 @@ The policy covers every submission that does not claim an answer — including a
 
 The economics first: revealed information cannot be unrevealed, and the learner can always think longer and ask again. So help is held to the minimum — regardless of how much the learner is struggling.
 
-The rule: **from the thinking trace, diagnose the first question in the loop the learner cannot answer — or has answered wrongly — and respond to exactly that question, at the coarsest grain that unblocks. One rung per request.**
+The rule: **from their code and their thinking trace, diagnose the first question in the loop the learner cannot answer — or has answered wrongly — and respond to exactly that question, at the coarsest grain that unblocks. One rung per request.**
 
 The ladder, least to most revealing:
 
-- **R0 — attention redirect.** "Re-read the second given." Costs nothing.
-- **R1 — pattern re-description.** "What you are looking at is a sum of many small things." Names the pattern class; no proposition. Costs almost nothing.
+- **R0 — attention redirect.** "Re-read the second example in the statement." Costs nothing.
+- **R1 — pattern re-description.** "What you are looking at is a lookup by key, many times over." Names the pattern class; no proposition. Costs almost nothing.
 - **R2 — candidate class.** "Something from this cluster applies." Narrows the space; discrimination within the class remains.
 - **R3 — the proposition, named.** The retrieval event is surrendered; execution remains.
 - **R4 — the move outlined.** Execution is surrendered too; the learner fills it in.
@@ -107,7 +107,7 @@ The rung a problem needed is a difficulty readout — only R0–R1 means the pro
 
 ## VII. Claimed answers
 
-The thinking trace carries junk by design. Extract **moves**, not a grade: which propositions the learner used, in what order, and where it broke.
+Run the code first — a claimed answer is verified by running it, never by reading alone. Then read the code, with the thinking trace (which carries junk by design), for **moves**, not a grade: which propositions the learner used, in what order, and where it broke.
 
 **On a wrong answer**, state the verdict plainly and localize the first break without giving the correction. Give the smallest nudge that lets the learner make the next move, then wait. If that nudge does not land, give another minimal nudge based on the new thinking. A failed attempt is never a reason to reveal the correction or conclude the problem. Continue until the learner finds and completes the correct solution.
 

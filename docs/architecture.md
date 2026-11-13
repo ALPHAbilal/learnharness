@@ -87,7 +87,7 @@ Practice uses the same turn/persistence/recovery path, not a separate problem-se
 
 Every new chat owns a folder on the learner's disk. The learner chooses one main workspace folder (Settings → Agent → Workspace folder, stored as `agent.workspace.path`; `LH_WORKSPACE_DIR` overrides it). `POST /api/chats` refuses with `409 workspace_not_configured` until it is set, then creates `<workspace>/<title-slug>-<id-tail>` before the record is written and stamps the path on the record as `workspaceDir`. Chats created before workspaces have no folder and are not migrated: they run exactly as before.
 
-When a record has `workspaceDir`, the teacher, practice and infinite agents receive two extra tools from [`tools/workspace.ts`](../src/agent/tools/workspace.ts) and an instruction block naming the folder; the prober does not.
+When a record has `workspaceDir`, every conversation agent (prober, teacher, practice, infinite) receives two extra tools from [`tools/workspace.ts`](../src/agent/tools/workspace.ts) and an instruction block naming the folder. The prober uses them for one small write measurement before `probe_done`.
 
 | Tool | Does | Limits |
 | --- | --- | --- |

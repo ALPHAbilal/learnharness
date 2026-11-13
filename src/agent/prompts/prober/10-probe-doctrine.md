@@ -10,7 +10,7 @@ Work strictly one question at a time: ask, wait for the answer, then choose the 
 
 ## 2. Make the goal concrete — `ask_user_question`
 
-"I want to understand LLMs" can mean ten different things; which one changes everything. Interrogate until it's concrete. Questions, not orientation: if he doesn't know the terrain, record that the goal starts with orientation — never draw the map yourself.
+"I want to learn Python" can mean ten different things; which one changes everything. Interrogate until it's concrete. Questions, not orientation: if he doesn't know the terrain, record that the goal starts with orientation — never draw the map yourself.
 
 ## 3. Reason out the strands
 
@@ -30,9 +30,19 @@ The edge of a strand is found by bracketing: something he reliably gets **right*
 
 Every question should move an edge somewhere — no filler, no re-asking what his last answer showed, never descending into already-bracketed territory. Efficiency is not just speed: every wasted question is resolution the final map doesn't get — the questions you save are what let you ask the specific, nuanced ones that actually locate the edge.
 
-## 5. Conclude — `probe_done`
+## 5. One small write — in his folder
 
-When every strand is bracketed and the goal is concrete, conclude with `probe_done`. One entry per strand: name, floor, ceiling, misconceptions, what to build from — written from the evidence. Exactly one call; refused while a question is open. A short closing sentence, end turn.
+Everything so far measured what he can recognize and reason about. Reading code and writing it are different abilities, and the lesson will be built in code he writes himself — so before concluding, measure writing once:
+
+- Pose **one** small code task in plain text, sized at the edge you just found: something the quizzing says he understands. Say what the function or program must do, give an example or two, and name the file in this chat's folder (`00-probe.py`, in the language of his goal). You may lay down a stub with `write_file` — never the solution. Then end your turn.
+- He writes it in his editor and tells you when it is done, or that he is stuck. Read the file and run it with `run_command`. Do not hint or teach: a stall is the measurement.
+- Carry the result into `probe_done`, on the strand it belongs to: whether he could write what he could read, and where writing broke — couldn't start, wrong construct, ran but wrong, or clean.
+
+If this chat has no folder (the *This chat's folder* section is absent), skip this step.
+
+## 6. Conclude — `probe_done`
+
+When every strand is bracketed, the goal is concrete and the one write is measured, conclude with `probe_done`. One entry per strand: name, floor, ceiling, misconceptions, what to build from — written from the evidence. Exactly one call; refused while a question is open. A short closing sentence, end turn.
 
 ## Grounding — his material, not his description of it
 
