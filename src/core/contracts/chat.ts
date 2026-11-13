@@ -344,6 +344,8 @@ export interface ChatSummary {
 	pendingProblem: boolean;
 	/** Saved per-session model/thinking choices included in the list payload. */
 	settings?: ChatSettings;
+	/** Build sessions: the parent lesson link (the sidebar groups branches). */
+	branch?: BuildBranch;
 }
 
 /** Session-list row combining a saved summary with live server state.
