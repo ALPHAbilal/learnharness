@@ -8,7 +8,8 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import "@xterm/xterm/css/xterm.css";
+// xterm.css loads globally from app/layout.tsx (CSS imports here would
+// break the node test runner, which imports the chat component tree).
 
 const THEME = {
 	background: "#0f1115",

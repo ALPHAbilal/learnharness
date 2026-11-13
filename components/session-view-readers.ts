@@ -1,6 +1,15 @@
 /** Private read-only bridges to the actual mounted input owners; never a second state model. */
+import { useState } from "react";
 import type { QuestionData, PluginSubmissionTarget, PluginNativeQuestionViewDraft, PluginSessionViewInput } from "@/src/core";
 export interface ViewReaderRef<T> { current: (() => T) | null; changed?(): void }
+/** A stable view reader for one component instance. Not useRef: React's
+ *  development server renderer seals ref objects, so assigning `changed`
+ *  to a ref crashed the session page under `npm run dev` ("Cannot add
+ *  property changed, object is not extensible"). */
+export function useViewReader<T>(): ViewReaderRef<T> {
+  const [reader] = useState<ViewReaderRef<T>>(() => ({ current: null, changed: undefined }));
+  return reader;
+}
 export interface NativeQuestionViewState {
   question: QuestionData;
   draft: Omit<PluginNativeQuestionViewDraft, "readingThinking">;
