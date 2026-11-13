@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, ImageSnapshot, PlanTree, SideChatThread, TurnUsage } from "../core/contracts.ts";
+import type { BuildBranch, BuildReturnEntry, ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, ImageSnapshot, PlanTree, SideChatThread, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
@@ -34,7 +34,7 @@ function chatFile(id: string): string {
  *  phase, busy, pendingQuestion) is already announced by turn-started /
  *  turn-settled, which the sidebar refetches on. Silence here is law,
  *  not oversight. */
-function createChat(title: string, kind?: "practice"): ChatRecord {
+function createChat(title: string, kind?: "practice" | "build", branch?: BuildBranch): ChatRecord {
 	const now = new Date().toISOString();
 	const record: ChatRecord = {
 		id: `chat_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
@@ -45,6 +45,8 @@ function createChat(title: string, kind?: "practice"): ChatRecord {
 		// Practice sessions carry the marker; teach stays ABSENT (absence
 		// reads as teach — pre-practice records never migrate).
 		...(kind === "practice" ? { kind: "practice" as const } : {}),
+		// Build branches (2026-11-13) carry their parent link from birth.
+		...(kind === "build" && branch ? { kind: "build" as const, branch } : {}),
 	};
 	fs.mkdirSync(PATHS.chats, { recursive: true });
 	writeChat(record);
@@ -86,7 +88,7 @@ function listChats(): ChatSummary[] {
 			.filter((f) => f.endsWith(".json"))
 			.map((f) => getChat(f.slice(0, -5)))
 			.filter((r): r is ChatRecord => r !== null)
-			.map(({ messages, tree, turns, extractions, imageSnapshots: _imageSnapshots, sideChats: _sideChats, ...summary }) => {
+			.map(({ messages, tree, turns, extractions, imageSnapshots: _imageSnapshots, sideChats: _sideChats, buildReturns: _buildReturns, ...summary }) => {
 				// Per-record isolation (Wave B): a record whose messages fail the
 				// projection (e.g. pre-Wave-B UIMessage-format scratch — the
 				// zero-back-compat wipe makes these "corrupt") must not blank the
@@ -243,6 +245,37 @@ function updateSideChats(id: string, update: (threads: SideChatThread[]) => Side
 	return next;
 }
 
+/** Build branches (2026-11-13): replace the branch link (phase changes).
+ *  One synchronous read-modify-write — never touches messages, so a
+ *  running turn's persist keeps it. Silent; not conversation activity. */
+function saveBranch(id: string, branch: BuildBranch): void {
+	const record = getChat(id);
+	if (!record) throw new Error(`Chat not found: ${id}`);
+	record.branch = branch;
+	writeChat(record);
+}
+
+/** Queue a returned branch's summary on the PARENT record (delivered at
+ *  its next learner turn). Idempotent per entry id. Returns false when the
+ *  parent no longer exists. */
+function queueBuildReturn(parentId: string, entry: BuildReturnEntry): boolean {
+	const record = getChat(parentId);
+	if (!record) return false;
+	const returns = record.buildReturns ?? [];
+	if (!returns.some((r) => r.id === entry.id)) record.buildReturns = [...returns, entry];
+	writeChat(record);
+	return true;
+}
+
+/** Mark queued returns delivered (their markers are now in messages). */
+function markBuildReturnsDelivered(parentId: string, ids: readonly string[]): void {
+	const record = getChat(parentId);
+	if (!record?.buildReturns || ids.length === 0) return;
+	const wanted = new Set(ids);
+	record.buildReturns = record.buildReturns.map((r) => (wanted.has(r.id) ? { ...r, delivered: true } : r));
+	writeChat(record);
+}
+
 export const chatStore: ChatStore = {
 	createChat,
 	getChat,
@@ -256,4 +289,7 @@ export const chatStore: ChatStore = {
 	appendTurnUsage,
 	appendExtractionUsage,
 	updateSideChats,
+	saveBranch,
+	queueBuildReturn,
+	markBuildReturnsDelivered,
 };

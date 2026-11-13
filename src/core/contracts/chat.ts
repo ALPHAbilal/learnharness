@@ -15,8 +15,38 @@ import type { EmissionStats } from "./graph.ts";
 
 /** Session kind: teach is the default when a saved record omits kind.
  * Practice uses the adaptive-practice agent without teaching extraction or
- * graph writes. Reading an absent kind does not require a record migration. */
-export type ChatKind = "teach" | "practice";
+ * graph writes. Build is a hands-on workspace branch opened from a teaching
+ * step (docs/superpowers/specs/2026-11-13-workspace-practice-branch-design.md):
+ * the build coach, no extraction or graph writes. Reading an absent kind
+ * does not require a record migration. */
+export type ChatKind = "teach" | "practice" | "build";
+
+/** A build session's link to the lesson it branched from. Written at branch
+ * creation and on phase changes only — never mid-turn message state. */
+export interface BuildBranch {
+	parentChatId: string;
+	/** The plan node the learner branched at; null before any plan exists. */
+	parentNodeId: string | null;
+	/** The node's title (or a fallback label) as shown when branching. */
+	parentNodeTitle: string;
+	/** Absolute workspace folder for this branch. */
+	folder: string;
+	phase: "customize" | "build" | "returned";
+	returnedAt?: string;
+}
+
+/** A build branch's evidence summary, queued on the PARENT record until the
+ * parent's next learner turn delivers it as a build-return marker. Delivery
+ * never lands between a pending question call and its result. */
+export interface BuildReturnEntry {
+	id: string;
+	branchId: string;
+	nodeId: string | null;
+	nodeTitle: string;
+	summary: string;
+	createdAt: string;
+	delivered: boolean;
+}
 
 /** One persisted native session under data/chats/<id>.json. Messages retain
  * native agent history; transcript rendering groups them into a separate view.
@@ -47,6 +77,10 @@ export interface ChatRecord {
 	 * shares one thread. Every main request appends new raw exchanges across
 	 * all threads; already-recorded teacher history is never rewritten. */
 	sideChats?: SideChatThread[];
+	/** Build sessions only: the link to the parent lesson. */
+	branch?: BuildBranch;
+	/** Teaching sessions only: build-branch summaries awaiting delivery. */
+	buildReturns?: BuildReturnEntry[];
 	/** Schema version. Absence denotes version 1; writes stamp the current
 	 * supported version. Reads refuse records stamped newer than this build
 	 * so a downgraded app cannot rewrite an unsupported record. */
