@@ -23,6 +23,8 @@ Use the thinking fields to explain your reasoning, uncertainty, or reaction—no
 
 Choose **Practice** for problems rather than a lesson. Start from selected graph material or describe material directly. Submit your thinking as you work; the model's committed solution is revealed when the problem concludes. Use **Next problem** when ready to continue.
 
+To practise a lesson step hands-on, press the hammer (**Build it yourself**) beside any step. It opens a build branch: a coach that already knows the lesson and its probe results agrees with you on what to build, then guides you through small stages, each checked by tests, in a real folder with an editor and a terminal you share with the coach. Press **Done** to return; the coach's evidence summary joins the lesson at your next reply. Build branches run commands on your own computer inside their folder (`<learning data>/practice/`); the folder rule catches mistakes but is not a sandbox.
+
 Sessions are saved locally, including earlier messages when context is compacted. The [keyboard guide](keyboard.md) covers submission, focus, question controls, and cancellation.
 
 ## Dictation
