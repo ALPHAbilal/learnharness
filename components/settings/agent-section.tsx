@@ -105,7 +105,7 @@ interface SegmentInfo {
 	shared: boolean;
 }
 
-type PromptView = Record<"teacher" | "prober" | "practice", SegmentInfo[]> & { build?: SegmentInfo[] };
+type PromptView = Record<"teacher" | "prober" | "practice", SegmentInfo[]> & { planner?: SegmentInfo[]; build?: SegmentInfo[]; mentor?: SegmentInfo[] };
 type PromptRow = SegmentInfo & { usageHint?: string };
 
 /** Compose: one tool toggled, the rest of the section carried verbatim.
@@ -254,14 +254,18 @@ export interface PromptSection {
  *  second copy of the runtime's Practice shared-fragment allowlist.
  *  Pure — exported for tests. */
 export function sectionedSegments(view: PromptView): PromptSection[] {
-	// The build coach (2026-11-13) joins only when the API reports it, so
-	// older payloads and fixtures keep their exact sections.
+	// The planner (coach-planner design §4.1) and the build coach
+	// (2026-11-13) join only when the API reports them, so older payloads
+	// and fixtures keep their exact sections.
 	const agents = ([
 		{ id: "teacher", label: "Teacher" },
 		{ id: "prober", label: "Prober" },
+		{ id: "planner", label: "Planner" },
+		// The mentor is the learner-facing "Coach" (coach-planner design §4.5).
+		{ id: "mentor", label: "Coach" },
 		{ id: "practice", label: "Practice" },
 		{ id: "build", label: "Build coach" },
-	] as const).filter(({ id }) => id !== "build" || view.build !== undefined);
+	] as const).filter(({ id }) => (id !== "build" || view.build !== undefined) && (id !== "planner" || view.planner !== undefined) && (id !== "mentor" || view.mentor !== undefined));
 	const segmentsOf = (id: (typeof agents)[number]["id"]): SegmentInfo[] => view[id] ?? [];
 	const shared = new Map<string, SegmentInfo>();
 	for (const { id } of agents) {

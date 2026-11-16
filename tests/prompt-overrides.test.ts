@@ -40,6 +40,7 @@ const teacherAgent = await import("../src/agent/teacher-agent.ts");
 const { allSegmentPaths, effectivePromptSegments } = await import("../src/agent/prompt-segments.ts");
 const { isValidSegmentPath } = await import("../src/core/prompt-segments.ts");
 const { promptOverrides } = await import("../src/store/prompt-overrides.ts");
+const { mentorInstructions } = await import("../src/agent/subagents/mentor.ts");
 // Route-level pins drive the actual app/api handlers (framework-free
 // Request/Response), isolated under the same temp LH_DATA_DIR.
 const { PUT: putSettingsSection } = await import("../app/api/settings/[section]/route.ts");
@@ -106,8 +107,10 @@ function deleteSegment(segment: string[]): Promise<Response> {
 describe("isValidSegmentPath (the mirror-layout discipline)", () => {
 	it("accepts the shared base and numeric fragments, rejects everything else", () => {
 		assert.equal(isValidSegmentPath("system-prompt.md"), true);
-		assert.equal(isValidSegmentPath("teacher/20-teaching.md"), true);
-		assert.equal(isValidSegmentPath("prober/10-probe-doctrine.md"), true);
+		assert.equal(isValidSegmentPath("teacher/20-turn.md"), true);
+		assert.equal(isValidSegmentPath("prober/10-probe.md"), true);
+		assert.equal(isValidSegmentPath("planner/10-plan.md"), true);
+		assert.equal(isValidSegmentPath("mentor/00-base.md"), true);
 		// the shared/ fragments dir (sources v1): composed by BOTH agents,
 		// overridable like any other segment
 		assert.equal(isValidSegmentPath("shared/10-personality.md"), true);
@@ -115,9 +118,9 @@ describe("isValidSegmentPath (the mirror-layout discipline)", () => {
 			"", // empty
 			"README.md", // no agent dir
 			"teacher/README.md", // not numeric-prefixed
-			"teacher/20-teaching.txt", // not .md
+			"teacher/20-turn.txt", // not .md
 			"../system-prompt.md", // traversal
-			"agent/../teacher/20-teaching.md", // traversal
+			"agent/../teacher/20-turn.md", // traversal
 			"/etc/passwd", // absolute
 			"teacher", // bare dir
 			"teacher/", // bare dir
@@ -133,9 +136,9 @@ describe("the override store", () => {
 	it("listOverrides is empty with no dir, then lists written mirrors sorted", () => {
 		fs.rmSync(PROMPTS_OVERRIDE_DIR, { recursive: true, force: true });
 		assert.deepEqual(promptOverrides.listOverrides(), []);
-		promptOverrides.writeOverride("teacher/20-teaching.md", "custom teaching");
+		promptOverrides.writeOverride("teacher/20-turn.md", "custom teaching");
 		promptOverrides.writeOverride("system-prompt.md", "custom base");
-		assert.deepEqual(promptOverrides.listOverrides(), ["system-prompt.md", "teacher/20-teaching.md"]);
+		assert.deepEqual(promptOverrides.listOverrides(), ["system-prompt.md", "teacher/20-turn.md"]);
 	});
 
 	it("readOverride round-trips; delete removes idempotently; invalid paths no-op", () => {
@@ -178,7 +181,7 @@ describe("the source-derived segment list", () => {
 			prober.map((s) => s.path),
 			[
 				"system-prompt.md",
-				"prober/10-probe-doctrine.md",
+				"prober/10-probe.md",
 				"shared/10-voice.md",
 				"shared/15-accuracy.md",
 				"shared/16-mental-model.md",
@@ -189,8 +192,27 @@ describe("the source-derived segment list", () => {
 				"shared/40-formatting.md",
 			],
 		);
-		assert.equal(teacher.some((s) => s.path === "teacher/05-method.md"), true);
-		assert.equal(teacher.some((s) => s.path === "teacher/10-planning.md"), true);
+		assert.deepEqual(
+			teacher.map((s) => s.path),
+			[
+				"system-prompt.md",
+				"teacher/10-job.md",
+				"teacher/20-turn.md",
+				"teacher/30-questions.md",
+				"teacher/35-stuck.md",
+				"teacher/40-jobs.md",
+				"teacher/50-demos.md",
+				"teacher/55-images.md",
+				"shared/10-voice.md",
+				"shared/15-accuracy.md",
+				"shared/16-mental-model.md",
+				"shared/20-question-tools.md",
+				"shared/25-confidence.md",
+				"shared/30-learner-files.md",
+				"shared/35-side-conversations.md",
+				"shared/40-formatting.md",
+			],
+		);
 		assert.equal(teacher.some((s) => s.path === "teacher/60-probing-in-brief.md"), false);
 		assert.equal(
 			teacher.every(
@@ -214,11 +236,47 @@ describe("the source-derived segment list", () => {
 		assert.equal(allSegmentPaths().some((p) => p.includes("README")), false);
 	});
 
+	it("the planner composes the base, its own fragment, then exactly voice, accuracy and learner files", () => {
+		assert.deepEqual(
+			effectivePromptSegments("planner", {}).map((s) => s.path),
+			[
+				"system-prompt.md",
+				"planner/10-plan.md",
+				"shared/10-voice.md",
+				"shared/15-accuracy.md",
+				"shared/30-learner-files.md",
+			],
+		);
+		assert.ok(allSegmentPaths().includes("planner/10-plan.md"), "the planner's fragment is overridable");
+		const planner = teacherAgent.composeInstructions("planner");
+		assert.ok(planner.includes("# The plan"), "the planner fragment composes");
+		assert.ok(planner.includes("Call `plan_batch`"));
+		assert.ok(!planner.includes("# One turn"), "no teacher fragment leaks in");
+	});
+
+	it("the mentor (the learner's Coach) composes its own fragment only — no base, no shared fragments", () => {
+		assert.deepEqual(effectivePromptSegments("mentor", {}).map((s) => s.path), ["mentor/00-base.md"]);
+		assert.ok(allSegmentPaths().includes("mentor/00-base.md"), "the mentor's fragment is overridable");
+		const mentor = mentorInstructions();
+		assert.ok(mentor.startsWith("# The coach"), "the mentor fragment composes alone");
+		assert.ok(mentor.includes("one `review` call"));
+		assert.ok(mentor.includes("Fact ids you add are new short slugs (lowercase letters, digits, hyphens). In `judged` and arrows, use the fact ids exactly as shown to you."));
+		assert.ok(!mentor.includes("---"), "a single segment: no separators, no shared base");
+		// An enabled override composes in its place.
+		promptOverrides.writeOverride("mentor/00-base.md", "MENTOR OVERRIDE");
+		try {
+			assert.equal(mentorInstructions({ "mentor/00-base.md": true }), "MENTOR OVERRIDE");
+			assert.equal(mentorInstructions({}), mentor, "the switch, not the file, enables it");
+		} finally {
+			promptOverrides.deleteOverride("mentor/00-base.md");
+		}
+	});
+
 	it("effective segments: switch+file → override; either missing → source text", () => {
-		promptOverrides.writeOverride("teacher/20-teaching.md", "MY WAY");
-		const switches = { "teacher/20-teaching.md": true, "system-prompt.md": false };
+		promptOverrides.writeOverride("teacher/20-turn.md", "MY WAY");
+		const switches = { "teacher/20-turn.md": true, "system-prompt.md": false };
 		const teacher = effectivePromptSegments("teacher", switches);
-		const teaching = teacher.find((s) => s.path === "teacher/20-teaching.md");
+		const teaching = teacher.find((s) => s.path === "teacher/20-turn.md");
 		assert.ok(teaching);
 		assert.equal(teaching.overrideText, "MY WAY");
 		assert.equal(teaching.enabled, true);
@@ -228,8 +286,8 @@ describe("the source-derived segment list", () => {
 		assert.equal(base.overrideText, null);
 		assert.equal(base.enabled, false);
 		// a switch for a segment with NO override file never enables it
-		const weird = effectivePromptSegments("teacher", { "teacher/10-planning.md": true });
-		const planning = weird.find((s) => s.path === "teacher/10-planning.md");
+		const weird = effectivePromptSegments("teacher", { "teacher/10-job.md": true });
+		const planning = weird.find((s) => s.path === "teacher/10-job.md");
 		assert.ok(planning);
 		assert.equal(planning.enabled, false);
 		assert.equal(planning.overrideText, null);
@@ -274,19 +332,19 @@ describe("composeInstructions: override honoring + the byte-identical source pat
 	});
 
 	it("an enabled override swaps in; switch off or file absent composes source", () => {
-		promptOverrides.writeOverride("teacher/20-teaching.md", "CUSTOM TEACHING LOOP");
+		promptOverrides.writeOverride("teacher/20-turn.md", "CUSTOM TEACHING LOOP");
 		try {
-			const on = composeInstructions("teacher", { "teacher/20-teaching.md": true });
+			const on = composeInstructions("teacher", { "teacher/20-turn.md": true });
 			assert.ok(on.includes("CUSTOM TEACHING LOOP"), "override composes when switch on");
-			assert.ok(!on.includes("# Teach — one step at a time"), "source text is replaced");
+			assert.ok(!on.includes("# One turn"), "source text is replaced");
 			// switch off → source default (the file stays on disk)
 			const off = composeInstructions("teacher", {});
-			assert.ok(off.includes("# Teach — one step at a time"), "source composes when switch off");
+			assert.ok(off.includes("# One turn"), "source composes when switch off");
 			// switch on for a segment with NO file → source (enabled needs both)
-			const noFile = composeInstructions("teacher", { "teacher/10-planning.md": true });
-			assert.ok(noFile.includes("# Planning"), "file absent → source default");
+			const noFile = composeInstructions("teacher", { "teacher/10-job.md": true });
+			assert.ok(noFile.includes("# Your job"), "file absent → source default");
 		} finally {
-			promptOverrides.deleteOverride("teacher/20-teaching.md");
+			promptOverrides.deleteOverride("teacher/20-turn.md");
 		}
 	});
 
@@ -331,7 +389,7 @@ describe("composeInstructions: override honoring + the byte-identical source pat
 // path heals any orphan that still arises (disk wipes outside the app).
 
 describe("delete clears the switch — the record and file agree by construction", () => {
-	const SEGMENT = "teacher/20-teaching.md";
+	const SEGMENT = "teacher/20-turn.md";
 
 	it("DELETE removes the file AND clears the on-switch in one operation", async () => {
 		promptOverrides.writeOverride(SEGMENT, "custom teaching");
@@ -339,7 +397,7 @@ describe("delete clears the switch — the record and file agree by construction
 		assert.equal(on.status, 200, "ON with a real file is valid");
 		assert.equal(readSettingsRecord()?.agent?.prompts?.[SEGMENT], true, "switch landed in the record");
 
-		const res = await deleteSegment(["teacher", "20-teaching.md"]);
+		const res = await deleteSegment(["teacher", "20-turn.md"]);
 		assert.equal(res.status, 200);
 		const body = (await res.json()) as { deleted: boolean; switchCleared: boolean };
 		assert.deepEqual(body, { path: SEGMENT, deleted: true, switchCleared: true }, "the response names what happened");
@@ -354,7 +412,7 @@ describe("delete clears the switch — the record and file agree by construction
 	});
 
 	it("DELETE is idempotent for file and switch — nothing to clear, still 200", async () => {
-		const res = await deleteSegment(["teacher", "20-teaching.md"]);
+		const res = await deleteSegment(["teacher", "20-turn.md"]);
 		assert.equal(res.status, 200);
 		const body = (await res.json()) as { switchCleared: boolean };
 		assert.equal(body.switchCleared, false, "no switch was present — nothing cleared");
@@ -362,7 +420,7 @@ describe("delete clears the switch — the record and file agree by construction
 });
 
 describe("an orphaned ON heals to OFF on write — never a 400 (the invariant: a user can never get stuck)", () => {
-	const SEGMENT = "teacher/20-teaching.md";
+	const SEGMENT = "teacher/20-turn.md";
 
 	it("the exact repro: file wiped at disk level → UI mirrors the orphan and flips a tool toggle → the write SUCCEEDS and heals", async () => {
 		promptOverrides.writeOverride(SEGMENT, "custom teaching");
@@ -371,7 +429,7 @@ describe("an orphaned ON heals to OFF on write — never a 400 (the invariant: a
 
 		// The disk-level wipe — OUTSIDE the app (the delete route now clears
 		// the switch, so this is the only way an orphan still arises).
-		fs.rmSync(path.join(PROMPTS_OVERRIDE_DIR, "teacher", "20-teaching.md"));
+		fs.rmSync(path.join(PROMPTS_OVERRIDE_DIR, "teacher", "20-turn.md"));
 
 		// The exact trap shape: the client mirrors the record's orphaned ON
 		// while writing an unrelated tool toggle. Today (pre-fix) → 400 forever.
@@ -416,7 +474,7 @@ describe("Practice settings API and effective prompt loading", () => {
 		const response = await getPromptSegments();
 		assert.equal(response.status, 200);
 		const view = await response.json();
-		for (const kind of ["teacher", "prober", "practice"] as const) {
+		for (const kind of ["teacher", "prober", "planner", "practice", "mentor"] as const) {
 			assert.deepEqual(view[kind], effectivePromptSegments(kind, readSettingsRecord()?.agent?.prompts ?? {}));
 		}
 		assert.deepEqual(view.practice.map((s: { path: string }) => s.path), [

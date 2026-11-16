@@ -34,7 +34,7 @@ import {
 import { parseQuizInput } from "../src/core/tool-parts.ts";
 import { resolveTargetId } from "../src/core/chains.ts";
 import { bareQuestionTools } from "../src/agent/teacher-agent.ts";
-import { probeQuizTool } from "../src/agent/tools.ts";
+import { probeQuizTool, teachQuizToolFor } from "../src/agent/tools.ts";
 
 /** The incident's exact encoding: the value wrapped in literal quotes. */
 function QUOTED(value: string): string {
@@ -56,6 +56,7 @@ function whiteheadQuiz(type: unknown, correctAnswer: unknown) {
 		correctAnswer,
 		type,
 		nodeId: "experience-first",
+		facts: ["f-experience-first"],
 	};
 }
 
@@ -158,7 +159,7 @@ describe("the calculus retry loop — an exact answer was incorrectly stripped",
 	it("the real probe tool accepts a label with its sentence-final period", async () => {
 		const input = {
 			question: "Which claim?",
-			options: [{ label: "The claim holds." }, { label: "The claim need not hold." }],
+			options: [{ label: "The claim need not hold." }, { label: "The claim holds." }],
 			explanation: "The premise does not imply the claim.",
 			correctAnswer: "The claim need not hold.",
 		};
@@ -186,5 +187,18 @@ describe("the display mirror — raw records heal on read", () => {
 		assert.equal(normalizeQuizType(parsed?.type), "predict");
 		// The graded answer resolves to the option despite the recorded colon.
 		assert.deepEqual(parsed ? coerceCorrectAnswer(parsed.correctAnswer, parsed.options.map((o) => o.value ?? o.label)) : [], ["parmenides"]);
+	});
+});
+
+describe("fact tags — the stringified and bare-string wobbles", () => {
+	it("the generic heal parses a JSON-encoded facts array against the teach schema", () => {
+		assert.deepEqual((healEncodedArguments({ facts: '["f-a","f-b"]' }, quizInputObject) as { facts: unknown }).facts, ["f-a", "f-b"]);
+	});
+
+	it("END-TO-END: a bare-string facts passes pi-ai validation after the tool's own prepareArguments", () => {
+		const quiz = bareQuestionTools().quiz!;
+		const args = { ...whiteheadQuiz("check", "parmenides"), facts: "f-experience-first" };
+		const validated = validateToolArguments(quiz as never, { id: "call_f", type: "toolCall", name: "quiz", arguments: quiz.prepareArguments!(args) } as never) as { facts: unknown };
+		assert.deepEqual(validated.facts, ["f-experience-first"]);
 	});
 });

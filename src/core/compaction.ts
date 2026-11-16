@@ -38,7 +38,7 @@ import type { PlanTree } from "./contracts/plan.ts";
 import { derivePlanStatusesLh, derivedNodeStatus } from "./contracts/plan.ts";
 import { COMPACTED_HISTORY_HEADER } from "./contracts/chat.ts";
 import type { LhMessage, LhMarkerMessage } from "./native-messages.ts";
-import { newMessageId } from "./native-messages.ts";
+import { newMessageId, nextContextBoundaryIndex } from "./native-messages.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model, ToolResultMessage, SystemMessage } from "@earendil-works/pi-ai";
 
@@ -148,13 +148,17 @@ function textCharsOfContent(content: unknown): number {
  * marker: usage captured before a compaction described the pre-cut
  * context — the next request carries the summary + kept tail instead,
  * so pre-marker usage is not a valid anchor (pi's "don't trust usage
- * captured before a later compaction" law). Index into messages, or
- * null. */
+ * captured before a later compaction" law). The fresh-context boundary of
+ * the agent the next turn builds (nextContextBoundaryIndex — the teacher's
+ * node-handoff, the planner's planner-wake) stops the scan the same way:
+ * the next request starts at that marker. Index into messages, or null. */
 export function lastAssistantUsageIndex(
 	messages: readonly (LhMessage | AgentMessage)[],
 ): number | null {
+	const boundary = nextContextBoundaryIndex(messages);
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i]!;
+		if (i === boundary) return null;
 		if ((m as { role?: string }).role === "custom" && (m as LhMarkerMessage).customType === "compaction") return null;
 		if ((m as { role?: string }).role !== "assistant") continue;
 		const a = m as AssistantMessage & { stopReason?: string };
@@ -214,7 +218,7 @@ export function estimateTokens(messages: readonly (LhMessage | AgentMessage)[], 
  * markers have no context, just like native metadata entries. */
 function cutMessage(message: LhMessage): LhMessage | null {
 	if (message.role !== "custom") return message;
-	if (["compaction", "plan-block", "problem-dismissed"].includes(message.customType)) return null;
+	if (["compaction", "plan-block", "plan-update", "probe-edge", "problem-dismissed"].includes(message.customType)) return null;
 	if (message.customType === "side-question" && !message.content) return null; // an empty marker has no model-visible text
 	return message;
 }
@@ -225,12 +229,15 @@ function cutMessage(message: LhMessage): LhMessage | null {
  * retain their preceding assistant call, not the entire session.
  * No encrypted-signature sizing and no exact retained-token guarantee.
  * Returns the first kept record index; a zero/no-progress cut drops nothing.
+ * Never cuts before the fresh-context boundary of the agent the next turn
+ * builds (nextContextBoundaryIndex): history before it is not in that
+ * agent's context, so there is nothing there to compact.
  * Keep this and estimateMessageTokens aligned deliberately when upgrading Pi.
  */
 export function compactionCutIndex(messages: readonly LhMessage[], keepRecentTokens = KEEP_RECENT_TOKENS, model?: Model<Api>): number {
 	const previous = activeCompactionOf(messages);
 	const previousKept = previous ? keptIndexFor(messages, previous) : -1;
-	const start = Math.max(0, previousKept);
+	const start = Math.max(0, previousKept, nextContextBoundaryIndex(messages));
 	const points: number[] = [];
 	for (let i = start; i < messages.length; i++) {
 		const message = cutMessage(messages[i]!);
@@ -355,7 +362,7 @@ export function serializeForSummary(messages: readonly LhMessage[]): string {
 			);
 		} else if (role === "custom") {
 			const marker = m as LhMarkerMessage;
-			if (marker.customType === "plan-block") continue; // UI-only
+			if (marker.customType === "plan-block" || marker.customType === "plan-update" || marker.customType === "probe-edge") continue; // UI-only
 			if (marker.customType === "side-question" && !marker.content) continue;
 			if (marker.customType === "side-question") lines.push(`[LEARNER–HELPER CONVERSATION] ${citationsToReadableText(marker.content)}`);
 			else lines.push(`[SYSTEM NOTE] ${marker.customType === "practice-thinking" ? citationsToReadableText(marker.content) : marker.content}`);

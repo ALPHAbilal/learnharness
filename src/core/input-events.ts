@@ -32,8 +32,16 @@ import type { QuestionAnswerData } from "./question-core.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { validatePluginSubmissionImageArray, validatePluginSubmissionImages, type PluginSubmissionImages, type PluginSubmissionOccurrence } from "./plugin-submissions.ts";
 import type { LhMessage } from "./native-messages.ts";
+import type { PlanTree } from "./contracts/plan.ts";
+import type { EvidenceEvent } from "./contracts/graph.ts";
+import { nodeHandoffText, roadRecord } from "./contracts/handoff.ts";
+import type { FactKnowledge } from "./knowledge.ts";
+import { nextPlanNode } from "./plan-progress.ts";
 import {
 	activeProblemOf,
+	agentKindFor,
+	hasUnresolvedQuestion,
+	newNodeHandoffMessage,
 	activeProblemOccurrenceOf,
 	concludedByDismissalPair,
 	isSideQuestionMarker,
@@ -76,7 +84,13 @@ export type ChatInput =
 	 *  explicit go-ahead during the between-problems pause — the Next
 	 *  chip or Enter on an empty composer. Practice sessions only, and
 	 *  only with nothing active (mid-problem input rides the dock). */
-	| { type: "next" };
+	| { type: "next" }
+	/** The plan's Start button (coach-planner design O3): the learner
+	 *  accepts the planner's presented plan. Teach sessions only, while the
+	 *  planner is the selected agent, with a stored plan and no open
+	 *  question. Appends the first node's handoff and starts a turn — the
+	 *  teacher's, because the handoff flips agentKindFor. */
+	| { type: "plan-accept" };
 
 /** A wake-pipeline steer delivery — same turn composition, server-origin.
  *  Wave C (2026-09-26): the idle wake carries EVERY queued marker as its
@@ -282,6 +296,8 @@ export function parseChatInput(input: unknown): ChatInput {
 		}
 		case "next":
 			return { type: "next" };
+		case "plan-accept":
+			return { type: "plan-accept" };
 		default:
 			throw new ChatInputError(`unknown input type: ${String(i.type)}`);
 	}
@@ -295,10 +311,17 @@ export function parseChatInput(input: unknown): ChatInput {
  * DANGLING QUESTION call in the record (posed, never answered) — anything
  * else 400s honestly instead of silently interrupting a question or
  * double-answering.
+ *
+ * `deps.knowledge` is the folded evidence (knowledgeOf over the graph's
+ * evidence ledger) and `deps.events` the ledger itself — read by
+ * plan-accept only, to pick the node and fill its handoff (numbers, and
+ * the road record of a later node); absent reads every fact at the prior
+ * and an empty road.
  */
 export function inputAppends(
-	record: { messages: LhMessage[]; kind?: string },
+	record: { messages: LhMessage[]; kind?: string; tree?: PlanTree | null },
 	input: ChatInput,
+	deps: { knowledge?: ReadonlyMap<string, FactKnowledge>; events?: readonly EvidenceEvent[] } = {},
 ): LhMessage[] {
 	assertPluginQuestionInputAllowed(record.messages, input);
 	assertNativeSubmissionTarget(record.messages, input);
@@ -344,6 +367,40 @@ export function inputAppends(
 				throw new ChatInputError("next input requires no active problem");
 			}
 			return [...dismissalConclusion(record), newNextMessage()];
+		}
+		case "plan-accept": {
+			// Honest 400s: Start exists only for a teach session whose planner
+			// has presented a plan the learner has not accepted yet — the first
+			// plan, or the next batch after a planner-wake (mid-lesson).
+			if ((record.kind ?? "teach") !== "teach") {
+				throw new ChatInputError("plan-accept input is a teaching-session affordance");
+			}
+			if (agentKindFor(record.messages) !== "planner") {
+				throw new ChatInputError("plan-accept input requires a plan waiting for acceptance");
+			}
+			const tree = record.tree;
+			if (!tree || tree.nodes.length === 0) {
+				throw new ChatInputError("plan-accept input requires a stored plan");
+			}
+			if (hasUnresolvedQuestion(record.messages)) {
+				throw new ChatInputError("plan-accept input requires no open question");
+			}
+			const knowledge = deps.knowledge ?? new Map<string, FactKnowledge>();
+			const node = nextPlanNode(tree, knowledge);
+			if (!node) throw new ChatInputError("plan-accept input found no plan node left to teach");
+			// START for the plan's first handoff; CONTINUE (road record + the
+			// coach's latest card since the previous handoff) afterwards.
+			const previousHandoff = record.messages.findLastIndex((m) => m.role === "custom" && m.customType === "node-handoff");
+			const first = previousHandoff < 0;
+			const lastCard = first ? undefined : record.messages.slice(previousHandoff + 1).findLast((m) => m.role === "custom" && m.customType === "coach-card");
+			return [newNodeHandoffMessage(node.id, nodeHandoffText({
+				tree,
+				nodeId: node.id,
+				knowledge,
+				first,
+				road: first ? [] : roadRecord(tree, deps.events ?? [], knowledge, node.id),
+				lastCard: lastCard?.role === "custom" ? lastCard.content : null,
+			}))];
 		}
 	}
 }

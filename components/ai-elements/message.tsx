@@ -413,9 +413,14 @@ MessageResponse.displayName = "MessageResponse";
 
 /** Recovery is a tool-text presentation concern, not a shape/answer-data
  * transform. Ordinary assistant/user prose keeps MessageResponse unchanged. */
-export function ToolContentResponse({ children, ...props }: MessageResponseProps) {
+/** `plainLinks`: render links and auto-linked addresses as plain text. Needed
+ * wherever the text sits inside a <button> (quiz options): Streamdown's link is
+ * itself a <button>, and a button inside a button is invalid HTML. */
+const plainLinkComponents = { ...mdComponents, a: ({ children }: { children?: import("react").ReactNode }) => <span>{children}</span> } as typeof mdComponents;
+
+export function ToolContentResponse({ children, plainLinks, ...props }: MessageResponseProps & { plainLinks?: boolean }) {
   return (
-    <MessageResponse {...props}>
+    <MessageResponse {...(plainLinks ? { components: plainLinkComponents } : {})} {...props}>
       {typeof children === "string" ? repairMathForDisplay(children) : children}
     </MessageResponse>
   );

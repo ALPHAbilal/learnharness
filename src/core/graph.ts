@@ -43,6 +43,10 @@
  * link appends a node line whose phrasings join `aliases` and whose
  * provenance unions (getGraph merges lines by id).
  *
+ * A second deterministic writer sits beside the merger: writePlannedFacts()
+ * (coach-planner design §4.3) writes the planner's and coach's facts and
+ * arrows for teaching sessions, where the post-hoc extractor is off.
+ *
  * Derivation below (getGraph / graphSnapshot) is reads only — everything
  * is recomputed from the ledgers. Every function takes the storage ports
  * (core/ports.ts) as explicit parameters — pure core, no adapter imports;
@@ -68,6 +72,7 @@ import { MIN_CLUSTER_SIZE } from "./clusters.ts";
 import { formatChainLine } from "./chains.ts";
 import { attachImpToCommunities, birthSessionOf, birthSessionPartition } from "./session-clusters.ts";
 import { sourceFileLabel } from "./source-label.ts";
+import { knowledgeOf } from "./knowledge.ts";
 import type { ChatStore, GraphStore } from "./ports.ts";
 
 /** The storage ports every graph operation needs, passed explicitly. */
@@ -124,6 +129,81 @@ function pointOf(chatId: string, messageId?: string): ProvenancePoint[] {
 
 const samePoint = (a: ProvenancePoint, b: ProvenancePoint): boolean =>
 	a.chatId === b.chatId && a.messageId === b.messageId;
+
+/** The phrasing a node line carries: name, statement, aliases. */
+interface NodePhrasing {
+	name: string;
+	statement: string;
+	aliases: readonly string[];
+}
+
+/** Identity verdict applied: append a LINK line to an existing node — the
+ *  phrasings join the node's aliases and the provenance unions at read
+ *  time (the first line's name/statement/createdAt stand). */
+function appendLinkLine(ledgers: GraphStore, id: string, phrasing: NodePhrasing, provenance: ProvenancePoint[], now: string): void {
+	ledgers.appendNode({
+		id,
+		name: phrasing.name,
+		statement: phrasing.statement,
+		aliases: [...phrasing.aliases],
+		createdAt: now,
+		provenance,
+	});
+}
+
+/** Mint a new node line; returns its fresh n_ id. */
+function appendNewNode(ledgers: GraphStore, phrasing: NodePhrasing, provenance: ProvenancePoint[], now: string): string {
+	const node: GraphNode = {
+		id: newGraphNodeId(),
+		name: phrasing.name,
+		statement: phrasing.statement,
+		aliases: [...phrasing.aliases],
+		createdAt: now,
+		provenance,
+	};
+	ledgers.appendNode(node);
+	return node.id;
+}
+
+/** Appends one chain with chat-level provenance unless THIS chat already
+ *  asserted the same (premises, conclusion); reuses the chain id an
+ *  identical key already carries (link-style). Endpoints resolve through
+ *  `resolve`; an unresolvable conclusion, or no premise left after
+ *  resolution (duplicates collapse, a premise equal to the conclusion is
+ *  dropped), yields undefined. */
+type ChainWriter = (
+	premises: readonly string[],
+	conclusion: string,
+	resolve: (endpoint: string) => string | undefined,
+) => { id: string; appended: boolean } | undefined;
+
+function createChainWriter(ledgers: GraphStore, chatId: string, now: string): ChainWriter {
+	const assertedByChat = new Set<string>();
+	const idOfKey = new Map<string, string>();
+	for (const line of ledgers.readChains()) {
+		const key = chainKey(line.premises, line.conclusion);
+		if (!idOfKey.has(key)) idOfKey.set(key, line.id);
+		if (line.provenance.some((pt) => pt.chatId === chatId)) assertedByChat.add(key);
+	}
+	return (rawPremises, rawConclusion, resolve) => {
+		const conclusion = resolve(rawConclusion);
+		if (conclusion === undefined) return undefined; // unresolvable endpoint — skip
+		// Duplicate local ids resolving to one node (two phrasings of one
+		// premise) collapse; a premise equal to the conclusion is dropped.
+		const premises = [...new Set(rawPremises.map(resolve))].filter(
+			(p): p is string => p !== undefined && p !== conclusion,
+		);
+		if (premises.length === 0) return undefined; // a chain IS an argument — bare propositions ride the node ledger alone
+		const key = chainKey(premises, conclusion);
+		const known = idOfKey.get(key);
+		if (assertedByChat.has(key) && known !== undefined) return { id: known, appended: false }; // this chat already asserted this argument
+		const id = known ?? newGraphChainId();
+		ledgers.appendChain({ id, premises, conclusion, createdAt: now, provenance: pointOf(chatId) });
+		idOfKey.set(key, id);
+		assertedByChat.add(key);
+		return { id, appended: true };
+	};
+}
 
 // ─── the merger (extraction pipeline stage 3 — deterministic) ────────────────
 
@@ -186,26 +266,10 @@ export function mergeFindings(
 			graphNodeId = linkTo;
 			// Link-append: phrasings + provenance join at read time (the
 			// first line's name/statement/createdAt stand).
-			ledgers.appendNode({
-				id: graphNodeId,
-				name: p.name,
-				statement: p.statement,
-				aliases: [...p.aliases],
-				createdAt: now,
-				provenance: points,
-			});
+			appendLinkLine(ledgers, graphNodeId, p, points, now);
 		} else {
-			const node: GraphNode = {
-				id: newGraphNodeId(),
-				name: p.name,
-				statement: p.statement,
-				aliases: [...p.aliases],
-				createdAt: now,
-				provenance: points,
-			};
-			ledgers.appendNode(node);
+			graphNodeId = appendNewNode(ledgers, p, points, now);
 			stats.nodes++;
-			graphNodeId = node.id;
 			existingIds.add(graphNodeId);
 		}
 		mapping.set(p.id, graphNodeId);
@@ -222,36 +286,15 @@ export function mergeFindings(
 	//    at read time; a known argument re-stated appends under the SAME
 	//    arg_ id — link-style, exactly like node link-appends; the first
 	//    line's premises/createdAt stand at read time).
-	const assertedByChat = new Set<string>();
-	const idOfKey = new Map<string, string>();
-	for (const line of ledgers.readChains()) {
-		const key = chainKey(line.premises, line.conclusion);
-		if (!idOfKey.has(key)) idOfKey.set(key, line.id);
-		if (line.provenance.some((pt) => pt.chatId === chatId)) assertedByChat.add(key);
-	}
+	const writeChain = createChainWriter(ledgers, chatId, now);
+	// Mixed namespace (digest-aware extraction, 2026-09-30): an endpoint
+	// resolves through the job-local map (this submit's propositions) OR
+	// passes through verbatim when it names an existing node (THE GRAPH SO
+	// FAR references, ids verbatim). Anything else is unresolvable — skip.
+	const resolve = (endpoint: string): string | undefined =>
+		mapping.get(endpoint) ?? (existingIds.has(endpoint) ? endpoint : undefined);
 	const emitChain = (chain: ExtractedChain): void => {
-		// Mixed namespace (digest-aware extraction, 2026-09-30): an
-		// endpoint resolves through the job-local map (this submit's
-		// propositions) OR passes through verbatim when it names an
-		// existing node (THE GRAPH SO FAR references, ids verbatim).
-		// Anything else is unresolvable — skip.
-		const resolve = (endpoint: string): string | undefined =>
-			mapping.get(endpoint) ?? (existingIds.has(endpoint) ? endpoint : undefined);
-		const conclusion = resolve(chain.conclusion);
-		if (conclusion === undefined) return; // unresolvable endpoint — skip
-		// Duplicate local ids resolving to one node (two phrasings of one
-		// premise) collapse; a premise equal to the conclusion is dropped.
-		const premises = [...new Set(chain.premises.map(resolve))].filter(
-			(p): p is string => p !== undefined && p !== conclusion,
-		);
-		if (premises.length === 0) return; // a chain IS an argument — bare propositions ride the node ledger alone
-		const key = chainKey(premises, conclusion);
-		if (assertedByChat.has(key)) return; // this chat already asserted this argument
-		const id = idOfKey.get(key) ?? newGraphChainId();
-		ledgers.appendChain({ id, premises, conclusion, createdAt: now, provenance: pointOf(chatId) });
-		idOfKey.set(key, id);
-		assertedByChat.add(key);
-		stats.chains!++;
+		if (writeChain(chain.premises, chain.conclusion, resolve)?.appended) stats.chains!++;
 	};
 	for (const chain of findings.chains) emitChain(chain); // the extractor's chains — the one chain source (digest-aware, owner 2026-09-30)
 
@@ -287,6 +330,119 @@ export function mergeFindings(
 		ledgers.appendCheckpoint({ chatId, foldedAt: source.foldedAt });
 	}
 	return stats;
+}
+
+// ─── planned facts (coach-planner design §4.3) ───────────────────────────────
+
+/** One fact the planner or coach writes into the graph. */
+export interface PlannedFact {
+	/** Session slug ("f7") — the key of the returned mapping. */
+	id: string;
+	/** Short label for the graph node. */
+	name: string;
+	/** The fact as one true, self-contained proposition. */
+	statement: string;
+	/** A live graph node id ("n_…") this fact IS: link to it instead of
+	 *  minting a new node. */
+	existing?: string;
+}
+
+/** One planned argument: endpoints are session slugs of this call's facts
+ *  or live graph node ids. */
+export interface PlannedArrow {
+	premises: string[];
+	conclusion: string;
+}
+
+/**
+ * Write a plan's facts and arrows into the graph ledgers — the planner's
+ * and coach's write path, beside the extraction merger. Facts are graph
+ * propositions, arrows are graph chains; everything carries chat-level
+ * provenance `{ chatId, messageId: "" }`.
+ *
+ *  - A fact with `existing` naming a live node appends a LINK line to it
+ *    (the fact's name/statement join its aliases, provenance unions —
+ *    exactly mergeFindings' linkTo path) and maps its slug to that id.
+ *  - Any other fact mints a new node.
+ *  - Arrows become chains, endpoints resolved through the slug mapping or
+ *    verbatim when they are live n_ ids; an argument this chat already
+ *    asserted (same premise set + conclusion) is skipped, and an identical
+ *    key's existing chain id is reused.
+ *
+ * Everything is validated BEFORE any append, so a rejected call writes
+ * nothing: an `existing` id that is not a live node, an arrow endpoint that
+ * is neither a slug of this call nor a live node, a duplicate slug, an
+ * empty name/statement, or an arrow without premises throws an Error whose
+ * message names the culprit (it flows back to the model).
+ *
+ * Unlike mergeFindings it does NOT run the whole-ledger simplifyChains
+ * pass and writes no coverage rows or sessions.jsonl checkpoint. The
+ * caller must run settleGraphLayout afterwards (kept out of here so this
+ * stays a plain ledger write).
+ *
+ * Returns the slug → graph id mapping and the chain ids the arrows
+ * resolved to (new or reused, de-duplicated, in arrow order).
+ */
+export function writePlannedFacts(
+	chatId: string,
+	facts: readonly PlannedFact[],
+	arrows: readonly PlannedArrow[],
+	deps: GraphDeps,
+): { ids: Record<string, string>; chainIds: string[] } {
+	const { graphStore: ledgers } = deps;
+	const liveIds = new Set(ledgers.readNodes().map((n) => n.id));
+
+	// 1. Validate everything first — a rejected call must write nothing.
+	const slugs = new Set<string>();
+	for (const fact of facts) {
+		if (typeof fact.id !== "string" || fact.id.trim() === "") {
+			throw new Error("Every fact needs a non-empty `id` (a slug like 'f7').");
+		}
+		if (slugs.has(fact.id)) throw new Error(`Duplicate fact id "${fact.id}" — fact ids must be unique.`);
+		slugs.add(fact.id);
+		if (typeof fact.name !== "string" || fact.name.trim() === "") throw new Error(`Fact "${fact.id}" needs a non-empty \`name\`.`);
+		if (typeof fact.statement !== "string" || fact.statement.trim() === "") {
+			throw new Error(`Fact "${fact.id}" needs a non-empty \`statement\`.`);
+		}
+		if (fact.existing !== undefined && !liveIds.has(fact.existing)) {
+			throw new Error(`Fact "${fact.id}" names existing node "${fact.existing}", which is not in the knowledge graph — use an id from the candidates, or leave \`existing\` out to create a new fact.`);
+		}
+	}
+	const known = (endpoint: string): boolean => slugs.has(endpoint) || liveIds.has(endpoint);
+	for (const arrow of arrows) {
+		if (!Array.isArray(arrow.premises) || arrow.premises.length === 0) {
+			throw new Error(`Arrow to "${arrow.conclusion}" needs at least one premise.`);
+		}
+		for (const endpoint of [...arrow.premises, arrow.conclusion]) {
+			if (!known(endpoint)) {
+				throw new Error(`Arrow endpoint "${endpoint}" is neither a fact id of this batch nor a node in the knowledge graph.`);
+			}
+		}
+	}
+
+	// 2. Facts → graph nodes (link or mint).
+	const now = new Date().toISOString();
+	const ids: Record<string, string> = {};
+	for (const fact of facts) {
+		const phrasing = { name: fact.name, statement: fact.statement, aliases: [] };
+		if (fact.existing !== undefined) {
+			appendLinkLine(ledgers, fact.existing, phrasing, pointOf(chatId), now);
+			ids[fact.id] = fact.existing;
+		} else {
+			ids[fact.id] = appendNewNode(ledgers, phrasing, pointOf(chatId), now);
+		}
+	}
+
+	// 3. Arrows → chains (slugs first, then live ids verbatim).
+	const writeChain = createChainWriter(ledgers, chatId, now);
+	const resolve = (endpoint: string): string | undefined =>
+		Object.hasOwn(ids, endpoint) ? ids[endpoint] : liveIds.has(endpoint) ? endpoint : undefined;
+	const chainIds: string[] = [];
+	for (const arrow of arrows) {
+		const written = writeChain(arrow.premises, arrow.conclusion, resolve);
+		if (written !== undefined && !chainIds.includes(written.id)) chainIds.push(written.id);
+	}
+	return { ids, chainIds };
 }
 
 /** The deterministic chain-simplification pass (owner, 2026-09-30
@@ -553,6 +709,14 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 		if (ids.length > 0) nodeSessions[nodeId] = ids;
 	}
 
+	// The knowledge number per live proposition with evidence (coach-planner
+	// design §4.3) — a side map like nodeSessions; GraphNode stays untouched.
+	const liveIds = new Set(graph.nodes.map((node) => node.id));
+	const knowledge: Record<string, { p: number; attempts: number }> = {};
+	for (const [nodeId, state] of knowledgeOf(deps.graphStore.readEvidence().filter((e) => liveIds.has(e.nodeId)))) {
+		knowledge[nodeId] = { p: state.p, attempts: state.attempts };
+	}
+
 	// BIRTH-SESSION CLUSTERS (wave 7, owner-locked 2026-09-23): embeddings
 	// are dead — a cluster is the SESSION THAT CREATED ITS PROPOSITIONS,
 	// derived on read from provenance (core/session-clusters.ts). The label
@@ -598,6 +762,7 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 		sessions,
 		fileSources,
 		nodeSessions,
+		knowledge,
 		clusters,
 		...(Object.keys(positions).length > 0 ? { positions } : {}),
 	};

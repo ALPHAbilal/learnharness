@@ -33,6 +33,11 @@ export interface ServerEvents {
 	 * true, the server gates model interaction and the client disables related
 	 * composer/dock submission. This is live state, not a persisted marker. */
 	"compaction-changed": { chatId: string; running: boolean };
+	/** The mentor (the learner-facing "Coach", coach-planner design §4.5)
+	 * started or finished reviewing a learner answer for this chat. While
+	 * running is true the answer's turn waits for it. Live state, not a
+	 * persisted marker. */
+	"mentor-changed": { chatId: string; running: boolean };
 	/** A side conversation changed. Notify-then-fetch: open views refetch
 	 *  GET /api/chats/:id/side-chats. Closing never deletes it. */
 	"side-chats-changed": { chatId: string };
@@ -57,6 +62,7 @@ export const SERVER_EVENT_TYPES = [
 	"subscriptions-changed",
 	"record-changed",
 	"compaction-changed",
+	"mentor-changed",
 	"side-chats-changed",
 	"plugins-changed",
 	"plugin-message",

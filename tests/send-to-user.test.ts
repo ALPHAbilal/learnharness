@@ -38,7 +38,8 @@ after(() => {
 const { sendToUserTool } = await import("../src/agent/tools/send-to-user.ts");
 const { practiceTools } = await import("../src/agent/tools/practice.ts");
 const { NARRATION_BLOCK_REASON, NARRATION_GUARD_MAX_BLOCKS, SEND_TO_USER_DELIVERY_RULE } = await import("../src/agent/narration-guard.ts");
-const { bareQuestionTools, createProberAgent, createTeacherAgent, createPracticeAgent, composeInstructions } = await import("../src/agent/teacher-agent.ts");
+const { bareQuestionTools, createProberAgent, createPlannerAgent, createTeacherAgent, createPracticeAgent, composeInstructions } = await import("../src/agent/teacher-agent.ts");
+const { graphStore } = await import("../src/store/graph.ts");
 const { SEND_TO_USER_TOOL, activeProblemOf, asAgentMessages, danglingQuestionOf, newUserMessage, sendToUserText, toLlmMessages, userFacingTextOf } = await import("../src/core/native-messages.ts");
 const { coverageOf, messageFingerprint, messageViewLines, teacherProseBlocks } = await import("../src/core/coverage.ts");
 const { projectView } = await import("../src/core/view.ts");
@@ -61,6 +62,9 @@ function scripted(provider: string, id: string, steps: FauxResponseStep[] = []) 
 const chatId = chatStore.createChat("Synthetic output gate").id;
 const factories = {
 	prober: (opts: AgentBuildOptions) => createProberAgent({ chatId, chatStore, jobStore, deliver: () => {}, spawn: () => {} }, opts),
+	// The planner (coach-planner design §4.1) speaks to the learner too: it
+	// gets send_to_user like the prober; the narration guard stays teacher-only.
+	planner: (opts: AgentBuildOptions) => createPlannerAgent({ chatId, chatStore, graphStore, jobStore, spawn: () => {} }, opts),
 	teacher: (opts: AgentBuildOptions) => createTeacherAgent({ chatId, chatStore, jobStore, spawn: () => {} }, opts),
 	practice: (opts: AgentBuildOptions) => createPracticeAgent({ chatId, chatStore }, opts),
 };
@@ -352,7 +356,7 @@ describe("send_to_user native flow (offline)", () => {
 	it("output + question streams, persists natively, replays, and reloads as prose before the question", async () => {
 		const lesson = "**Synthetic lesson:** four is twice two. $2 + 2 = 4$";
 		const quiz = {
-			type: "check", nodeId: "synthetic", question: "What is two plus two?",
+			type: "check", nodeId: "synthetic", facts: ["f-synthetic"], question: "What is two plus two?",
 			options: [{ label: "Four", value: "4" }, { label: "Five", value: "5" }],
 			correctAnswer: "4", explanation: "Add two pairs.",
 		};
@@ -397,7 +401,7 @@ describe("send_to_user native flow (offline)", () => {
 });
 
 const guardQuizInput = {
-	type: "check", nodeId: "synthetic", question: "What is two plus two?",
+	type: "check", nodeId: "synthetic", facts: ["f-synthetic"], question: "What is two plus two?",
 	options: [{ label: "Four", value: "4" }, { label: "Five", value: "5" }],
 	correctAnswer: "4", explanation: "Add two pairs.",
 };

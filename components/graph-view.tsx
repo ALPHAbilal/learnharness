@@ -156,6 +156,18 @@ export function renameSessionsPatch(snapshot: Pick<GraphSnapshot, "sessions">, i
 	snapshot.sessions[id] = title;
 }
 
+/** The node card's knowledge line (coach-planner design §4.10): the
+ *  learner's number for the proposition and how many graded answers it
+ *  folds. Nothing without evidence. Exported for tests. */
+export function KnownLine({ knowledge }: { knowledge?: { p: number; attempts: number } }) {
+	if (!knowledge) return null;
+	return (
+		<div data-testid="node-card-known" className="mt-1 text-xs tabular-nums text-muted-foreground">
+			Known: {Math.round(knowledge.p * 100)}% · {knowledge.attempts} {knowledge.attempts === 1 ? "answer" : "answers"}
+		</div>
+	);
+}
+
 /** Seed positions for nodes the ledger doesn't know yet (hygiene,
  *  2026-09-23 fix wave): they used to fall through to a ?? 0 and dump
  *  at the origin. Place them on a deterministic ring around the known
@@ -1589,6 +1601,7 @@ export function GraphView({
 				>
 					<div className="text-sm font-medium leading-snug">{selected.node.name}</div>
 					<div className="mt-1 text-xs leading-relaxed text-muted-foreground">{selected.node.statement}</div>
+				<KnownLine knowledge={snapshot?.knowledge?.[selected.node.id]} />
 					{selected.sourceIds.length > 0 ? (
 						<div className="mt-3 flex flex-col gap-1">
 							<div className="text-xs text-muted-foreground">Sessions</div>
@@ -1643,6 +1656,7 @@ export function GraphView({
 				chains={snapshot?.chains ?? []}
 				sessions={snapshot?.sessions ?? {}}
 				fileSources={snapshot?.fileSources ?? {}}
+				knowledge={snapshot?.knowledge}
 				onClose={() => {
 					setChainsOpen(false);
 					onChainSelectClose?.();

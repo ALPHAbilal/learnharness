@@ -29,3 +29,7 @@ xai-credentials.json*
 
 # dev-fresh launcher scratch (fresh-user sim): disposable per launch
 .fresh-data/
+
+# Local backups of learner data and test leftovers (never commit)
+data-backup-*/
+data-test-leftovers/

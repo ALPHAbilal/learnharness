@@ -1,8 +1,11 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { LhMessage } from "./native-messages.ts";
+import { nextContextBoundaryIndex, type LhMessage } from "./native-messages.ts";
 
 /** Latest completed conversation measurement, never a request-size estimate.
- * Ordered compaction markers invalidate every earlier reading. Live callers
+ * Ordered compaction markers invalidate every earlier reading, and so does
+ * the fresh-context boundary of the agent the next turn builds
+ * (nextContextBoundaryIndex: the teacher's node-handoff, the planner's
+ * planner-wake). Live callers
  * must exclude assistant slots that have not received message_end.
  * Reasoning is already inside output; totalTokens is deliberately not used.
  */
@@ -10,8 +13,10 @@ export function measuredContextTokens(
 	messages: readonly LhMessage[],
 	incompleteIds: ReadonlySet<string> = new Set(),
 ): number | null {
+	const boundary = nextContextBoundaryIndex(messages);
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]!;
+		if (i === boundary) return null;
 		if (message.role === "custom" && message.customType === "compaction") return null;
 		if (message.role !== "assistant" || incompleteIds.has(message.id)) continue;
 		const assistant = message as AssistantMessage;

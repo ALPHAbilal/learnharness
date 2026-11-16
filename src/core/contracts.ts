@@ -11,6 +11,7 @@
  */
 
 export * from "./contracts/plan.ts";
+export * from "./contracts/handoff.ts";
 export * from "./contracts/graph.ts";
 export * from "./contracts/chat.ts";
 export * from "./contracts/jobs.ts";

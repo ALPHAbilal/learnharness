@@ -44,7 +44,7 @@ export function AnsweredCard({ answer: savedAnswer, input }: { answer: QuestionA
 	// snapshot (what the model sees, compactAnswerForModel) is untouched;
 	// any parse failure or absent input renders exactly the older card.
 	const askInput = answer.kind === "ask" ? parseAskInput(input) : undefined;
-	const parsedDetails = askInput?.details ?? (answer.kind === "quiz" ? parseQuizInput(input)?.details : undefined);
+	const parsedDetails = askInput?.details ?? (answer.kind === "quiz" ? parseQuizInput(input, answer.tool)?.details : undefined);
 	const descByIndex = new Map((askInput?.options ?? []).map((o, i) => [i + 1, o.description]));
 
 	return (

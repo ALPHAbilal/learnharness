@@ -13,9 +13,9 @@ import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { probeDoneTool } from "../src/agent/tools/probe.ts";
 import type { SteerMessage } from "../src/core/contracts.ts";
-import { hasProbeDone, type LhMessage } from "../src/core/native-messages.ts";
+import { agentKindFor, hasProbeDone, newNodeHandoffMessage, newPlannerWakeMessage, newUserMessage, type LhMessage } from "../src/core/native-messages.ts";
 import { phaseAt3Lh } from "../src/core/phases.ts";
-import { HANDOFF_TEXT } from "../src/core/contracts.ts";
+import { HANDOFF_TEXT, PROBE_DONE_ACK_TEXT } from "../src/core/contracts.ts";
 import { chatStore } from "../src/store/chats.ts";
 import { PATHS } from "../config.ts";
 
@@ -200,4 +200,49 @@ describe("probe completion: matched successful results only (PR130 foundation)",
 			assert.deepEqual(messages, before);
 		});
 	}
+});
+
+// ─── agent selection (coach-planner design §4.1) ─────────────────────────────
+
+describe("agentKindFor: prober → planner → teacher, derived from the record", () => {
+	const handoff = () => newNodeHandoffMessage("node-a", "[Node handoff] test") as LhMessage;
+	const wake = () => newPlannerWakeMessage("[Planner wake] test") as LhMessage;
+	const done = () => [probeCall(), probeResult({ details: { ok: true } })];
+
+	it("prober until a concluded probe_done — markers alone never skip the probe", () => {
+		assert.equal(agentKindFor([]), "prober");
+		assert.equal(agentKindFor([newUserMessage("teach me") as LhMessage]), "prober");
+		assert.equal(agentKindFor([probeCall()]), "prober", "a bare call keeps probing");
+		assert.equal(agentKindFor([handoff()]), "prober", "a handoff without a concluded probe is still the probe");
+	});
+
+	it("planner once the probe is done and the plan is not accepted", () => {
+		assert.equal(agentKindFor(done()), "planner");
+		assert.equal(agentKindFor([...done(), newUserMessage("change node 2") as LhMessage]), "planner", "typed text while the plan waits stays with the planner");
+		assert.equal(agentKindFor([...done(), wake()]), "planner", "a wake before any handoff is still planning");
+	});
+
+	it("teacher once a node-handoff exists and no planner-wake follows it", () => {
+		assert.equal(agentKindFor([...done(), handoff()]), "teacher");
+		assert.equal(agentKindFor([...done(), handoff(), newUserMessage("go on") as LhMessage]), "teacher");
+		assert.equal(agentKindFor([...done(), wake(), handoff()]), "teacher", "a handoff after a wake answers it");
+	});
+
+	it("planner again when a planner-wake follows the latest node-handoff", () => {
+		assert.equal(agentKindFor([...done(), handoff(), wake()]), "planner");
+		assert.equal(agentKindFor([...done(), handoff(), wake(), handoff()]), "teacher");
+		assert.equal(agentKindFor([...done(), handoff(), handoff(), wake()]), "planner");
+	});
+});
+
+describe("the probe → planner handoff text", () => {
+	it("HANDOFF_TEXT wakes the planner: facts, arrows, at most 4 nodes, plan_batch, Start", () => {
+		assert.equal(
+			HANDOFF_TEXT,
+			"Next: plan the first stretch of the road from my current understanding toward my goal. Follow your planning instructions: facts, arrows, at most 4 nodes. When it is reasoned out, call plan_batch and present the plan; I will press Start or ask for changes.",
+		);
+		assert.match(PROBE_DONE_ACK_TEXT, /the planner plans from it/);
+		const description = probeDoneTool({ chatId: "x", chatStore, deliver: () => {} }).probe_done!.description;
+		assert.match(description, /the handoff artifact the planner plans from/);
+	});
 });

@@ -2,7 +2,10 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import { probeDoneInputSchema, PROBE_DONE_ACK_TEXT } from "../../core/contracts.ts";
 import { hasUnresolvedQuestion, hasProbeDone, type LhMessage } from "../../core/native-messages.ts";
-import type { ChatStore } from "../../core/ports.ts";
+import { probeGateOf, probeNotCompleteText, REFLECT_FIRST } from "../../core/question-facts.ts";
+import { edgeReport } from "../../core/probe-edge.ts";
+import { goalOf } from "../../core/plan-progress.ts";
+import type { ChatStore, GraphStore } from "../../core/ports.ts";
 import { buildProbeHandoffSteer, type SteerMessage } from "../../core/contracts.ts";
 
 /** What the probe_done tool closes over. */
@@ -13,6 +16,10 @@ export interface ProbeDoneContext {
 	/** Queue the handoff steer (the wake pipeline — src/server/jobs.ts).
 	 *  Injected so this module never imports the server seam. */
 	deliver: (steer: SteerMessage) => void;
+	/** The knowledge graph the probe map lives in: its evidence ledger is
+	 *  read for the probe's gate and edge report (draw_map / reflect write
+	 *  to it). Absent: no evidence (tests, bare registries). */
+	probeGraph?: GraphStore;
 }
 
 /** Does the transcript already carry a concluded probe (any state)?
@@ -57,7 +64,7 @@ export function probeDoneTool(ctx: ProbeDoneContext): Record<string, AgentTool<a
 				"ceiling where it runs out), and his learning goal is concrete. The input IS the learner assessment — " +
 				"one strand per dependency the lesson will rest on, with your read of where his edge sits on it " +
 				"(floor, ceiling, misconceptions, what to build from). It streams to the learner live and becomes " +
-				"the handoff artifact the teacher plans from. Refused while a question is still open, and after " +
+				"the handoff artifact the planner plans from. Refused while a question is still open, and after " +
 				"the probe is already concluded. After it succeeds, say your closing sentence and end your turn.",
 			// The core-owned schema (contracts/probe.ts) — the SAME schema the UI
 			// parse seam (tool-parts.ts) runs, so boundary-valid ⇔ consumer-parseable.
@@ -77,6 +84,18 @@ export function probeDoneTool(ctx: ProbeDoneContext): Record<string, AgentTool<a
 				if (probeConcluded(record.messages)) {
 					return { ok: false, error: "The probe is already concluded — probe_done fires exactly once." };
 				}
+				// The prober's map (draw_map / reflect): after a graded answer,
+				// reflect first; on a map, the probe must be complete. The edge
+				// report rides details — persistTurn emits the learner's
+				// probe-edge marker from it. A legacy record enforces nothing.
+				const gate = probeGateOf(record, ctx.probeGraph?.readEvidence() ?? [], ctx.chatId);
+				if (gate.mode === "unreflected") return { ok: false, error: REFLECT_FIRST };
+				if (gate.mode === "open") {
+					return { ok: false, error: probeNotCompleteText(gate.map, gate.counts, gate.unplaced) };
+				}
+				const report = gate.mode === "complete"
+					? edgeReport({ goal: goalOf(record.messages), map: gate.map, counts: gate.counts, questions: gate.asked, messages: record.messages })
+					: null;
 				try {
 					ctx.deliver(buildProbeHandoffSteer(ctx.chatId));
 				} catch (err) {
@@ -88,10 +107,11 @@ export function probeDoneTool(ctx: ProbeDoneContext): Record<string, AgentTool<a
 				// Context diet (owner, 2026-10-09): the assessment lives ONCE — as
 				// this call's arguments. content is the fixed ack (the agent never
 				// sees an echo); details = {ok:true} for the record/UI — the
-				// probe-done card reads the call's input, which it always preferred.
+				// probe-done card reads the call's input, which it always preferred
+				// — plus, on a map, the edge report for the learner's card.
 				return {
 					text: PROBE_DONE_ACK_TEXT,
-					details: { ok: true },
+					details: report ? { ok: true, report } : { ok: true },
 				};
 			}),
 		},

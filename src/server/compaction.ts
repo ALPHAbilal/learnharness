@@ -31,12 +31,15 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
 	activeCompactionOf,
+	agentKindFor,
 	buildCompactionPrompt,
 	compactionCutIndex,
+	contextBoundaryForKind,
 	COMPACTION_RESERVE_TOKENS,
 	estimateContextTokens,
 	estimateTokens,
 	newCompactionMarker,
+	nextContextBoundaryIndex,
 	planTreeToText,
 	serializeForSummary,
 	toLlmMessages,
@@ -170,11 +173,14 @@ export function effectiveThresholdTokens(settingTokens: number | undefined, cont
  *  carry), so the fallback path runs the plain heuristic over the
  *  CUT-HONORED projection (never the dropped span) plus the additive
  *  prompt term the anchor would have covered. Supplying a model opts into
- *  reasoning-aware estimates; the service supplies it only when enabled. */
+ *  reasoning-aware estimates; the service supplies it only when enabled.
+ *  The projection is the one the next agent reads: its kind (agentKindFor)
+ *  picks the fresh-context boundary, exactly as its convertToLlm does. */
 export function projectedContextTokens(messages: readonly LhMessage[], systemPromptTokens: number, model?: PiEngine["model"]): number {
 	const est = estimateContextTokens(messages, model);
 	if (est.lastUsageIndex !== null) return est.tokens;
-	return estimateTokens(toLlmMessages(messages as readonly AgentMessage[]) as unknown as readonly LhMessage[], model) + systemPromptTokens;
+	const boundary = contextBoundaryForKind(agentKindFor(messages));
+	return estimateTokens(toLlmMessages(messages as readonly AgentMessage[], { boundary }) as unknown as readonly LhMessage[], model) + systemPromptTokens;
 }
 
 // ─── the compaction run ─────────────────────────────────────────────────────
@@ -199,6 +205,10 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 
 	const cut = compactionCutIndex(messages, undefined, model);
 	if (cut <= 0 || cut >= messages.length) return; // no history can be dropped
+	// The fresh-context boundary of the agent the next turn builds: nothing
+	// before it is in that agent's context, so the summariser never sees it.
+	const boundary = nextContextBoundaryIndex(messages);
+	if (cut <= boundary) return; // nothing after the fresh start can be dropped
 
 	// The previous compaction's kept boundary (chained compactions
 	// summarize the old summary + what rode after it).
@@ -217,18 +227,23 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 		return;
 	}
 
-	// The span: from the PREVIOUS kept boundary through the cut.
-	let spanStart = 0;
+	// The span: from the PREVIOUS kept boundary through the cut. A previous
+	// compaction whose kept message lies at or before the fresh-context
+	// boundary summarised pre-boundary history: it is ignored, and the span
+	// starts at the boundary marker.
+	let spanStart = Math.max(boundary, 0);
 	let priorSummary: string | null = null;
-	if (previous && prevKept > 0) {
+	if (previous && prevKept > spanStart) {
 		spanStart = prevKept;
 		priorSummary = previous.content;
 	}
 	const span = messages.slice(spanStart, cut);
 	// The separately supplied prior summary replaces all summary markers
 	// in this span. Without a resolved prior boundary, retain the existing
-	// legacy fallback rather than silently discarding summary-only context.
-	const summaryMessages = priorSummary
+	// legacy fallback rather than silently discarding summary-only context —
+	// except after a fresh-context boundary, where every compaction marker
+	// in the span summarises history the agent no longer reads.
+	const summaryMessages = priorSummary || boundary >= 0
 		? span.filter((m) => m.role !== "custom" || m.customType !== "compaction")
 		: span;
 	const spanText = serializeForSummary(summaryMessages);

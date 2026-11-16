@@ -57,9 +57,15 @@ Runtime contract (the document runs in a sandboxed iframe, sandbox="allow-script
 - The parent sizes the iframe to the document height automatically; just build normal flowing layout.
   Make the demo fill the width and size its own height sensibly.
 
-Build quality:
-- The demo must directly serve the brief: every control named in the brief must exist and do the thing.
-- Controls need labels; sliders/inputs need current-value readouts. A learner should operate it unguided.
+Readable first, then true:
+- The learner reads before operating, so whatever they must read arrives intact and effortless. Code and
+  any literal text — output, messages, file contents — keeps its exact line breaks and indentation: put
+  it in <pre>. Text is large enough to read without leaning in. The one thing that changes is the thing
+  that stands out; nothing else competes with it.
+- What the demo shows must be what the real language or system does — never a plausible-looking fake.
+  When it simulates, it simulates faithfully.
+- Every control named in the brief exists and does its thing; controls are labelled and show their
+  current value. A learner operates it unguided.
 - Smooth enough interaction; requestAnimationFrame for animation, not setInterval when it matters.
 - Dark-mode neutral: pick a clean light background for the demo area so it reads on any card.
 
@@ -68,6 +74,7 @@ THE HOUSE RULE — never deliver untested:
 2. Call run_demo. It loads the file in a headless browser, waits ~2s, and reports console errors, uncaught
    errors (window.onerror), and failed requests. Optionally pass a probe: a JS expression evaluated in
    the page (e.g. "typeof window.simulate === 'function'" or a state assertion) to check deeper.
+   run_demo also checks readability: code whose line breaks collapse, or text under 12px, fails.
 3. If run_demo reports problems, FIX the document and call write_demo again, then run_demo again.
    Iterate until run_demo reports PASSED.
 4. Only then finish. Your final message is 1-3 sentences of NOTES for the teacher (what the demo shows,
@@ -151,8 +158,13 @@ function summarizeCounts(result: DemoRunResult): string {
 		result.consoleErrors.length > 0 ? `${result.consoleErrors.length} console error${result.consoleErrors.length === 1 ? "" : "s"}` : null,
 		result.pageErrors.length > 0 ? `${result.pageErrors.length} page error${result.pageErrors.length === 1 ? "" : "s"}` : null,
 		result.failedRequests.length > 0 ? `${result.failedRequests.length} failed request${result.failedRequests.length === 1 ? "" : "s"}` : null,
+		readability(result).length > 0 ? `${readability(result).length} readability problem${readability(result).length === 1 ? "" : "s"}` : null,
 	].filter(Boolean);
 	return counts.length > 0 ? counts.join(", ") : "ok";
+}
+
+function readability(result: DemoRunResult): string[] {
+	return result.readabilityProblems ?? [];
 }
 
 function formatRunResult(result: DemoRunResult): string {
@@ -161,7 +173,7 @@ function formatRunResult(result: DemoRunResult): string {
 			result.probeResult !== undefined
 				? ` Probe result: ${JSON.stringify(result.probeResult) ?? "undefined"}.`
 				: "";
-		return `PASSED: no console errors, no uncaught errors, no failed requests.${probe} If you are satisfied, finish with your notes; otherwise keep improving and re-test.`;
+		return `PASSED: no console errors, no uncaught errors, no failed requests, no readability problems.${probe} If you are satisfied, finish with your notes; otherwise keep improving and re-test.`;
 	}
 	const sections: string[] = [`FAILED: ${summarizeCounts(result)}.`];
 	if (result.consoleErrors.length > 0)
@@ -170,6 +182,8 @@ function formatRunResult(result: DemoRunResult): string {
 		sections.push(`Uncaught errors:\n${result.pageErrors.slice(0, 10).map((e) => `- ${e}`).join("\n")}`);
 	if (result.failedRequests.length > 0)
 		sections.push(`Failed requests:\n${result.failedRequests.slice(0, 10).map((r) => `- ${r}`).join("\n")}`);
+	if (readability(result).length > 0)
+		sections.push(`Readability problems (the learner could not read this):\n${readability(result).map((p) => `- ${p}`).join("\n")}`);
 	sections.push("Fix the document (write_demo) and re-test (run_demo).");
 	return sections.join("\n");
 }
@@ -177,7 +191,7 @@ function formatRunResult(result: DemoRunResult): string {
 /** Short summary of a run for failure notes. */
 function failureSummary(result: DemoRunResult | null): string {
 	if (!result) return "never tested";
-	const details = [...result.consoleErrors, ...result.pageErrors, ...result.failedRequests].slice(0, 5);
+	const details = [...result.consoleErrors, ...result.pageErrors, ...result.failedRequests, ...readability(result)].slice(0, 5);
 	return details.length > 0 ? `${summarizeCounts(result)} — ${details.join(" | ")}` : summarizeCounts(result);
 }
 

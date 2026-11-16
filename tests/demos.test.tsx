@@ -654,6 +654,25 @@ describe("demo builder (fake model + fake headless)", () => {
 		assert.match(result.notes ?? "", /ReferenceError/);
 	});
 
+	it("a readability problem fails the run like an error, and the builder is told what the learner could not read", async () => {
+		const unreadable: DemoRunResult = {
+			consoleErrors: [], pageErrors: [], failedRequests: [], ok: false,
+			readabilityProblems: ["line breaks collapsed in div.codepanel (\"from flask import Flask ⏎ app = Flask\") — put code and literal text in <pre> or give it white-space: pre"],
+		};
+		const headless = { ...fakeHeadless(), runDemo: async () => unreadable };
+		const activities: string[] = [];
+		const model = scriptedModel([
+			{ toolCalls: [{ toolCallId: "w1", toolName: "write_demo", input: { html: GOOD_HTML } }] },
+			{ toolCalls: [{ toolCallId: "r1", toolName: "run_demo", input: {} }] },
+			{ text: "Done." },
+		]);
+		const result = await runDemoBuilder({ title: "T", brief: "b" }, { engine: model, headless, onActivity: (line) => activities.push(line) });
+		assert.equal(result.html, "", "an unreadable demo never reaches the lesson");
+		assert.match(result.notes ?? "", /^FAILED: the demo never passed headless verification \(1 readability problem/);
+		assert.match(result.notes ?? "", /line breaks collapsed in div\.codepanel/);
+		assert.ok(activities.includes("run_demo: 1 readability problem"), activities.join(" | "));
+	});
+
 	it("fails fast with a clear message when no Chrome is available (never skips testing)", async () => {
 		const model = scriptedModel([{ text: "should never be reached" }]);
 		const result = await runDemoBuilder({ title: "T", brief: "b" }, { engine: model, headless: noChromeHeadless() });

@@ -1,11 +1,12 @@
 "use client";
 
 import { useId, useMemo } from "react";
-import { derivedNodeStatus, derivePlanStatuses } from "@/src/core";
+import type { LessonProgress } from "@/src/core";
 import {
 	PlanDiagram,
 	GRAPH_PAD,
 	latestTree,
+	planStatusesFor,
 	TEXT_CAP_SCALE,
 	type PopupMessage,
 } from "@/components/plan-block";
@@ -41,21 +42,25 @@ export function planExists(messages: readonly PopupMessage[]): boolean {
 	return !!tree && tree.nodes.length > 0;
 }
 
-export function PlanMarginalia({ messages }: { messages: readonly PopupMessage[] }) {
+export function PlanMarginalia({ messages, progress }: {
+	messages: readonly PopupMessage[];
+	/** The lesson progress (coach-design node states and per-node progress). */
+	progress?: LessonProgress | null;
+}) {
 	const markerId = useId().replace(/[^a-zA-Z0-9-]/g, "");
 	const tree = useMemo(() => latestTree(messages), [messages]);
 	const statuses = useMemo(
-		() => (tree ? derivePlanStatuses(tree, messages as Parameters<typeof derivePlanStatuses>[1]) : null),
-		[tree, messages],
+		() => (tree ? planStatusesFor(tree, messages, progress) : null),
+		[tree, messages, progress],
 	);
-	if (!tree || tree.nodes.length === 0) return null; // no plan yet: nothing in the margin
-	const statusOf = (id: string) => (statuses ? derivedNodeStatus(statuses, id) : "upcoming");
+	if (!tree || tree.nodes.length === 0 || !statuses) return null; // no plan yet: nothing in the margin
 	return (
 		<PlanDiagram
 			nodes={tree.nodes}
 			edges={tree.edges}
-			statusOf={statusOf}
-			glowId={statuses?.current ?? null}
+			statusOf={statuses.statusOf}
+			progressOf={statuses.progressOf}
+			glowId={statuses.glowId}
 			markerId={markerId}
 			pad={MARGIN_PAD}
 			textCapScale={TEXT_CAP_SCALE}

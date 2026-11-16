@@ -22,6 +22,9 @@ import {
 	explainInputBase,
 	explainInputObject,
 	explainInputProblems,
+	explainDisplayInputSchema,
+	normalizeFactTags,
+	probeExplainInputSchema,
 	quizInputSchema,
 	probeQuizInputSchema,
 	quizDisplayInputSchema,
@@ -69,8 +72,8 @@ describe("the schema's argument order (reasoning before the pick)", () => {
 				`explanation must precede correctAnswer in the emitted schema (got: ${keys.join(", ")})`,
 			);
 			assert.deepEqual(keys, schema === quizInputSchema
-				? ["type", "nodeId", "question", "options", "multiSelect", "explanation", "correctAnswer", "details"]
-				: ["question", "options", "multiSelect", "explanation", "correctAnswer", "details"]);
+				? ["type", "nodeId", "facts", "question", "options", "multiSelect", "explanation", "correctAnswer", "details"]
+				: ["question", "options", "facts", "multiSelect", "explanation", "correctAnswer", "details"]);
 		}
 	});
 });
@@ -83,6 +86,7 @@ describe("quizInputSchema / quizInputProblems (the authoring contract)", () => {
 		explanation: "Mercury is the innermost planet.",
 		type: "check",
 		nodeId: "planet-order",
+		facts: ["f-planet-order"],
 	};
 
 	it("accepts a valid single-select quiz (label as correctAnswer)", () => {
@@ -667,7 +671,7 @@ describe("explainInputBase / explainInputProblems (the commitment contract)", ()
 		// least, and the order doubles as the authoring order (role, target,
 		// then the question). Mirrors the quiz reorder (see above).
 		const keys = Object.keys(explainInputObject.properties);
-		assert.deepEqual(keys, ["type", "nodeId", ...Object.keys(explainInputBase.properties)]);
+		assert.deepEqual(keys, ["type", "nodeId", "facts", ...Object.keys(explainInputBase.properties)]);
 	});
 
 	it("an empty commitment is the one authoring problem", () => {
@@ -732,6 +736,7 @@ describe("the quiz role field (predict | check)", () => {
 		explanation: "Mercury is the innermost planet.",
 		type: "check",
 		nodeId: "planet-order",
+		facts: ["f-planet-order"],
 	};
 	it("the teach schema REQUIRES type; the probe schema has no such field", () => {
 		assert.equal(Value.Check(quizInputSchema, valid), true, "fixture (type: check) is boundary-valid");
@@ -817,5 +822,32 @@ describe("the quiz role field (predict | check)", () => {
 	it("the display parse KEEPS the role: quizDisplayInputSchema retains type where the base strips it", () => {
 		const cleaned = Value.Clean(quizDisplayInputSchema, { ...valid }) as Record<string, unknown>;
 		assert.equal(cleaned.type, "check", "role survives the display parse (the dock gates collapse + labels on it)");
+	});
+});
+
+// ─── fact tags (coach-planner design §4.4) ────────────────────────────────
+
+describe("fact tags in the question contract", () => {
+	it("normalizeFactTags wraps a bare string and parses a JSON-encoded array; anything else passes through", () => {
+		assert.deepEqual(normalizeFactTags("f1"), ["f1"]);
+		assert.deepEqual(normalizeFactTags('["f1", "f2"]'), ["f1", "f2"]);
+		assert.deepEqual(normalizeFactTags("[not json"), ["[not json"]);
+		const list = ["f1"];
+		assert.equal(normalizeFactTags(list), list);
+		assert.equal(normalizeFactTags(undefined), undefined);
+		assert.equal(normalizeFactTags(7), 7);
+	});
+
+	it("the probe schemas carry OPTIONAL facts after their leading required fields", () => {
+		assert.deepEqual(Object.keys(probeExplainInputSchema.properties), ["question", "correctAnswer", "facts", "details"]);
+		assert.equal(Value.Check(probeQuizInputSchema, { question: "q", options: [{ label: "a" }, { label: "b" }], explanation: "e", correctAnswer: "a" }), true, "untagged probe is schema-valid");
+		assert.equal(Value.Check(probeQuizInputSchema, { question: "q", options: [{ label: "a" }, { label: "b" }], facts: [], explanation: "e", correctAnswer: "a" }), false, "an empty list is not");
+	});
+
+	it("the display schemas keep facts so parsed parts carry them", () => {
+		const parsed = parseQuizInput({ type: "check", nodeId: "n", facts: "f1", question: "q", options: [{ label: "a" }, { label: "b" }], explanation: "e", correctAnswer: "a" });
+		assert.deepEqual(parsed?.facts, ["f1"], "a bare-string tag parses as the boundary accepted it");
+		assert.ok("facts" in quizDisplayInputSchema.properties);
+		assert.ok("facts" in explainDisplayInputSchema.properties);
 	});
 });

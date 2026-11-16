@@ -29,7 +29,7 @@
 
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
-import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
+import { quizDisplayInputSchema, askInputSchema, askOptionProblems, quizInputProblems, explainInputProblems, explainDisplayInputSchema, withNormalizedFactTags, withProbeAnswerKey, type AskToolInput, type QuizToolInput, type ExplainToolInput } from "./question-core.ts";
 import { healEncodedArguments } from "./argument-heal.ts";
 import { probeDoneInputSchema, type ProbeDoneInput } from "./contracts/probe.ts";
 import { readPluginQuestionSnapshot, type PluginQuestionSnapshot } from "./plugin-questions.ts";
@@ -77,7 +77,11 @@ function boundaryParse<T>(schema: TSchema, input: unknown): T | undefined {
 /** Shape parsing never repairs authored text. The dock builds its answer
  * data from this source copy; recovery belongs exclusively to presentation
  * (ToolContentResponse), never option identities, grading, or snapshots. */
-export function parseQuizInput(input: unknown): QuizToolInput | undefined {
+/** `tool`: the posing tool's name when known — a `probe` call's answer
+ * key is its first option (question-core withProbeAnswerKey), applied
+ * before the parse exactly as the boundary applied it. */
+export function parseQuizInput(input: unknown, tool?: string): QuizToolInput | undefined {
+	if (tool === "probe") input = withProbeAnswerKey(input);
 	// quizDisplayInputSchema (question-core, owner 2026-10-03): base + the
 	// OPTIONAL `type` — new teach-phase records carry predict|check and the
 	// dock renders/gates by it (normalizeQuizType at the read seam); old and
@@ -88,7 +92,9 @@ export function parseQuizInput(input: unknown): QuizToolInput | undefined {
 	// wobble must heal HERE too or a posed quiz renders invisible (the
 	// tool-parts law). healEncodedArguments is the same pure pass the
 	// boundary's withArgumentHeal runs.
-	const healedInput = healEncodedArguments(input, quizDisplayInputSchema);
+	// The fact-tag guard mirrors the boundary's prepareArguments too: a
+	// bare-string `facts` the tool accepted must parse here as well.
+	const healedInput = healEncodedArguments(withNormalizedFactTags(input), quizDisplayInputSchema);
 	const cleaned = boundaryParse<QuizToolInput>(quizDisplayInputSchema, healedInput);
 	if (!cleaned) return undefined;
 	if (quizInputProblems(cleaned).length > 0) return undefined;
@@ -115,7 +121,7 @@ export function parseAskInput(input: unknown): AskToolInput | undefined {
  *  variants share the same fields; the teacher's nodeId is an unknown
  *  key Value.Clean strips, same as the quiz seam. */
 export function parseExplainInput(input: unknown): ExplainToolInput | undefined {
-	const cleaned = boundaryParse<ExplainToolInput>(explainDisplayInputSchema, healEncodedArguments(input, explainDisplayInputSchema));
+	const cleaned = boundaryParse<ExplainToolInput>(explainDisplayInputSchema, healEncodedArguments(withNormalizedFactTags(input), explainDisplayInputSchema));
 	if (!cleaned) return undefined;
 	if (explainInputProblems(cleaned).length > 0) return undefined;
 	return cleaned;
@@ -125,7 +131,7 @@ export function parseExplainInput(input: unknown): ExplainToolInput | undefined 
  * mutate the recorded input or invent missing authoring fields. */
 export function parseQuestionInput(tool: string, input: unknown): QuizToolInput | AskToolInput | ExplainToolInput | undefined {
 	switch (tool) {
-		case "quiz": case "probe": return parseQuizInput(input);
+		case "quiz": case "probe": return parseQuizInput(input, tool);
 		case "explain": case "recall": return parseExplainInput(input);
 		case "ask_user_question": return parseAskInput(input);
 		default: return undefined;

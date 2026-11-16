@@ -100,7 +100,9 @@ for (const practice of [false, true]) test(`${practice ? "plugin practice submis
 		writeSettings({ graph: { enabled: false }, compaction: { thresholdTokens: 80000 }, models: { strong: { model: { provider: model.provider, id: model.id } } } });
 		chatStore.saveSettings(chat.id, { model: { provider: model.provider, id: model.id } });
 		environmentVariables.NODE_ENV = "production"; // exercise the real gate, not its test-mode fast path
-		const response = await handleChatInput(chat.id, input, opts => practice ? createPracticeAgent({ chatId: chat.id, chatStore }, opts) : createProberAgent({ chatId: chat.id } as never, opts));
+		// The mentor (the learner's Coach) is not under test here: a null review
+		// keeps the offline model's request count to compaction + continuation.
+		const response = await handleChatInput(chat.id, input, opts => practice ? createPracticeAgent({ chatId: chat.id, chatStore }, opts) : createProberAgent({ chatId: chat.id } as never, opts), undefined, { mentor: async () => null });
 		assert.equal(response.status, 200, await response.clone().text());
 		const live = runningTurn(chat.id); if (live) await new Response(live.subscribe()).text();
 		await response.text();

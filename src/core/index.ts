@@ -36,6 +36,8 @@ export * from "./events.ts";
 // line existed). Same logic as layout-settle.ts below.
 export * from "./layout.ts";
 export * from "./plan-tree.ts";
+export * from "./knowledge.ts";
+export * from "./plan-progress.ts";
 export * from "./phases.ts";
 export * from "./pending.ts";
 export * from "./prompt-segments.ts";
@@ -111,3 +113,5 @@ export type * from "./plugin-tree.ts";
 export * from "./plugin-agents.ts";
 // Build branches (2026-11-13): the client reads which plan step a message belongs to.
 export { nodeAtMessage } from "./build-branch.ts";
+// The lesson progress payload (coach-planner design §4.10): pure, browser-safe.
+export * from "./lesson-progress.ts";

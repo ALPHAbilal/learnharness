@@ -13,6 +13,9 @@
  *                                      another line; readers merge)
  *   sessions.jsonl  SessionCheckpoint— emission checkpoints (foldedAt)
  *   coverage.jsonl  CoverageEntry    — per-message extraction coverage
+ *   evidence.jsonl  EvidenceEvent    — graded learner answers about facts
+ *                                      (additive: no format bump; a missing
+ *                                      file reads as empty)
  *
  * CHAINS-PRIMARY (owner, 2026-09-30): there is NO edges ledger — the edge
  * view (implication nodes + untyped arrows) is derived in core/graph.ts on
@@ -45,6 +48,8 @@ import type {
 	Position,
 	ProvenancePoint,
 	CoverageEntry,
+	EvidenceEvent,
+	EvidenceSource,
 	SessionCheckpoint,
 } from "../core/contracts.ts";
 import type { GraphStore } from "../core/ports.ts";
@@ -127,6 +132,25 @@ const isCheckpoint = (v: unknown): v is SessionCheckpoint =>
 const isCoverageEntry = (v: unknown): v is CoverageEntry =>
 	isRecord(v) && isString(v.chatId) && isString(v.fp) && typeof v.tokens === "number" && isString(v.foldedAt);
 
+const EVIDENCE_SOURCES: ReadonlySet<string> = new Set<EvidenceSource>(["probe", "quiz", "code", "recall", "practice"]);
+
+/** An evidence line: guess strictly inside (0,1), confidence (when present)
+ *  within 0–100. Anything else is skipped, never guessed at. */
+const isEvidenceEvent = (v: unknown): v is EvidenceEvent =>
+	isRecord(v) &&
+	isString(v.nodeId) &&
+	isString(v.chatId) &&
+	isString(v.messageId) &&
+	isString(v.at) &&
+	isString(v.source) &&
+	EVIDENCE_SOURCES.has(v.source) &&
+	typeof v.correct === "boolean" &&
+	(v.dontKnow === undefined || typeof v.dontKnow === "boolean") &&
+	typeof v.guess === "number" &&
+	v.guess > 0 &&
+	v.guess < 1 &&
+	(v.confidence === undefined || (typeof v.confidence === "number" && v.confidence >= 0 && v.confidence <= 100));
+
 // ─── the port implementation ────────────────────────────────────────────────
 
 export const graphStore: GraphStore = {
@@ -161,6 +185,13 @@ export const graphStore: GraphStore = {
 	},
 	readCoverage(): CoverageEntry[] {
 		return readValid(LEDGER_FILES.coverage, isCoverageEntry);
+	},
+
+	appendEvidence(event: EvidenceEvent): void {
+		appendLine(LEDGER_FILES.evidence, event);
+	},
+	readEvidence(): EvidenceEvent[] {
+		return readValid(LEDGER_FILES.evidence, isEvidenceEvent);
 	},
 
 	// ── imported-notes bookkeeping (config.SOURCES_FILE — a JSON map) ──
@@ -214,12 +245,14 @@ export const graphStore: GraphStore = {
 		chains?: GraphChain[];
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
+		evidence?: EvidenceEvent[];
 	}): void {
 		const files = {
 			nodes: LEDGER_FILES.nodes,
 			chains: LEDGER_FILES.chains,
 			coverage: LEDGER_FILES.coverage,
 			checkpoints: LEDGER_FILES.sessions,
+			evidence: LEDGER_FILES.evidence,
 		} as const;
 		for (const [key, records] of Object.entries(next) as [keyof typeof files, unknown[]][]) {
 			const file = files[key];

@@ -24,8 +24,10 @@ import type {
 	PluginJobMetadata,
 	ExtractionRunUsage,
 	PlanTree,
+	ProbeFacts,
 	Position,
 	CoverageEntry,
+	EvidenceEvent,
 	SessionCheckpoint,
 	SideChatThread,
 	BuildBranch,
@@ -70,6 +72,10 @@ export interface ChatStore {
 	saveImageSnapshot(id: string, snapshotId: string, image: ImageSnapshot): void;
 	/** Persist the session plan tree (plan tools call this in execute). */
 	saveTree(id: string, tree: PlanTree): void;
+	/** Persist the probe fact list (coach-planner design §4.4) — the facts the
+	 *  prober's graded questions must tag. Like saveTree: not conversation
+	 *  activity, updatedAt stays put. */
+	saveProbeFacts(id: string, probeFacts: ProbeFacts): void;
 	/** Append one usage entry to the record's turn log (the money channel,
 	 * 2026-09): idempotent per turn id — each request carries its own, so
 	 * a turn persisted twice appends once while continuation turns (which
@@ -134,6 +140,11 @@ export interface GraphStore {
 	 *  checkpoint — "uncovered" is derived from these, never tracked. */
 	appendCoverage(entry: CoverageEntry): void;
 	readCoverage(): CoverageEntry[];
+	/** Graded learner answers about facts (coach-planner design §4.3):
+	 *  append-only, one line per event. A missing ledger reads as empty;
+	 *  reads never write. */
+	appendEvidence(event: EvidenceEvent): void;
+	readEvidence(): EvidenceEvent[];
 
 	/** Append one cluster-naming run's usage (graph-global money channel) —
 	 *  idempotent per startedAt. */
@@ -169,6 +180,7 @@ export interface GraphStore {
 		chains?: GraphChain[];
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
+		evidence?: EvidenceEvent[];
 	}): void;
 }
 
@@ -262,7 +274,7 @@ export interface ThemeStore {
  */
 export interface PromptOverrideStore {
 	/** Every override path currently on disk ("system-prompt.md",
-	 *  "teacher/20-teaching.md", ...), POSIX-relative, sorted. */
+	 *  "teacher/20-turn.md", ...), POSIX-relative, sorted. */
 	listOverrides(): string[];
 	/** The override text, or null when the path has no file. */
 	readOverride(segmentPath: string): string | null;

@@ -169,7 +169,10 @@ const ACTIVITY_LABELS: Record<string, string> = {
 	visual: "Making a visual…",
 	pdf: "Reading a PDF…",
 	plan_init: "Drawing up the plan…",
+	plan_batch: "Drawing up the plan…",
 	probe_done: "Concluding the assessment…",
+	draw_map: "Drawing the map…",
+	reflect: "Updating the map…",
 };
 
 /** The activity label for ONE running tool (owner, streaming round

@@ -44,7 +44,8 @@ const { getGraph, deriveView } = await import("../src/core/graph.ts");
 const { sanitizeRenderSettings } = await import("../src/core/render-settings.ts");
 const { toLlmMessages } = await import("../src/core/native-messages.ts");
 const { phaseAt3Lh } = await import("../src/core/phases.ts");
-const { danglingQuestionOf, activeProblemOf } = await import("../src/core/native-messages.ts");
+const { danglingQuestionOf, activeProblemOf, agentKindFor, isLegacyTeachRecord } = await import("../src/core/native-messages.ts");
+const { projectView } = await import("../src/core/view.ts");
 
 const TEACH = "chat_mv27rrra_feff23b6";
 const PRACTICE = "chat_mv293wv5_10656952";
@@ -157,6 +158,18 @@ test("tools: the core tool surface appears in real fixture data", () => {
 	for (const t of ["problem", "conclude"]) {
 		assert.ok(practiceTools.has(t), `practice tool ${t} exercised in the fixture record`);
 	}
+	// plan_batch (the planner, coach update) has no real record yet — it is
+	// pinned by tests/plan-batch.test.ts and tests/planner-flow.test.ts.
+	assert.equal(teachTools.has("plan_batch"), false);
+});
+
+test("the coach update: the plan_init fixture is a LEGACY teach record that still renders", () => {
+	const messages = chatStore.getChat(TEACH)!.messages;
+	assert.equal(isLegacyTeachRecord(messages), true, "a plan_init call marks the record legacy");
+	assert.equal(agentKindFor(messages), "planner", "no node-handoff: the selector alone would plan — the handler refuses the turn first");
+	const view = projectView(messages);
+	assert.ok(view.some((m) => m.parts.some((p) => p.type === "tool-plan_init")), "the old plan call still projects");
+	assert.ok(view.some((m) => m.parts.some((p) => p.type === "data-plan-block")), "its plan block still splices in flow");
 });
 
 // ── the graph: ledgers through the full derivation ──────────────────────────

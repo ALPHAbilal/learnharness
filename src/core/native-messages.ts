@@ -40,6 +40,8 @@ import { ImmutableReadCache } from "./immutable-data.ts";
 import { QUESTION_TOOLS, type PendingQuestion } from "./pending.ts";
 import { pluginProblemForCall, readPluginProblemSubmission, type PluginProblemSnapshot } from "./plugin-problems.ts";
 import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
+import type { PlanTree } from "./contracts/plan.ts";
+import type { EdgeReport } from "./probe-edge.ts";
 import {
 	CONCLUDE_ACK_TEXT,
 	HANDOFF_TEXT,
@@ -87,7 +89,12 @@ export interface LhMarkerMessage {
 		| "side-question-told"
 		| "build-context"
 		| "build-activity"
-		| "build-return";
+		| "build-return"
+		| "node-handoff"
+		| "planner-wake"
+		| "coach-card"
+		| "plan-update"
+		| "probe-edge";
 	/** The model-facing text ("" for plan blocks — UI-only). */
 	content: string;
 	display: boolean;
@@ -116,10 +123,14 @@ export type LhMessage = (UserMessage | AssistantMessage | ToolResultMessage | Lh
 };
 
 /** Latest response only: never borrow an older process/model's window when
- * a fresh response has no metadata. Compaction invalidates the old report. */
+ * a fresh response has no metadata. Compaction invalidates the old report,
+ * and so does the fresh-context boundary of the agent the next turn builds
+ * (nextContextBoundaryIndex). */
 export function cliContextWindowOf(messages: readonly LhMessage[]): { model: string; tokens: number } | null {
+	const boundary = nextContextBoundaryIndex(messages);
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i]!;
+		if (i === boundary) return null;
 		if (message.role === "custom" && message.customType === "compaction") return null;
 		if (message.role !== "assistant") continue;
 		const tokens = message.cliContextWindow;
@@ -282,9 +293,110 @@ export function newHandoffMessage(chatId: string): LhMarkerMessage {
 	};
 }
 
+/** The node-handoff marker's UI payload (coach-planner design §4.6).
+ *  `firstKeptMessageId` is unused and always null: the marker itself is
+ *  the teacher's fresh-context boundary (toLlmMessages `boundary`). */
+export interface NodeHandoffDetails {
+	nodeId: string;
+	firstKeptMessageId: string | null;
+}
+
+/** The node handoff (coach-planner design §4.6): app-written context that
+ *  opens a plan node for the teacher. Hidden from the learner's
+ *  transcript; the model reads `content` (contracts/handoff.ts
+ *  nodeHandoffText) as a user-role message. Appended by the plan-accept
+ *  input; it is also the seam agentKindFor keys the teacher on. */
+export function newNodeHandoffMessage(nodeId: string, content: string, firstKeptMessageId: string | null = null): LhMarkerMessage {
+	const details: NodeHandoffDetails = { nodeId, firstKeptMessageId };
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "node-handoff",
+		content,
+		display: false,
+		details,
+		timestamp: Date.now(),
+	};
+}
+
+/** The planner wake (coach-planner design §4.7): when it is the latest of
+ *  the node-handoff / planner-wake markers, the next turn builds the
+ *  planner. Hidden from the learner; `content` is the model-facing text. */
+export function newPlannerWakeMessage(content: string): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "planner-wake",
+		content,
+		display: false,
+		details: {},
+		timestamp: Date.now(),
+	};
+}
+
+/** The coach-card marker's payload (coach-planner design §4.5/§4.6). */
+export interface CoachCardDetails {
+	phase: "probe" | "teach";
+	/** The plan node the card is about; null in the probe. */
+	nodeId: string | null;
+	notes: string[];
+	askLearner: string | null;
+}
+
+/** The coach card (coach-planner design D6): the coach's review, relayed
+ *  to the prober or teacher as a fixed app-built text (contracts/handoff.ts
+ *  coachCardText). Hidden from the learner's transcript; the model reads
+ *  `content` as a user-role message. */
+export function newCoachCardMessage(content: string, details: CoachCardDetails): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "coach-card",
+		content,
+		display: false,
+		details,
+		timestamp: Date.now(),
+	};
+}
+
+/** The plan update (coach-planner design §4.2/§4.5): appended whenever the
+ *  mentor changed the stored tree, carrying the FULL tree in `details` so
+ *  clients read the latest plan from the transcript. UI-only: no model
+ *  face (toLlmMessages filters it), hidden from the learner's transcript. */
+export function newPlanUpdateMessage(tree: PlanTree): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "plan-update",
+		content: "",
+		display: false,
+		details: { tree },
+		timestamp: Date.now(),
+	};
+}
+
+/** The probe's result for the learner: appended once at the turn's
+ *  persist after the successful probe_done (turn-service.ts persistTurn,
+ *  from the report in its result details), carrying the edge report the
+ *  learner's card renders. UI-only: no model face (toLlmMessages filters
+ *  it; the prober's last reflect result carries the same report to the
+ *  planner). */
+export function newProbeEdgeMessage(report: EdgeReport): LhMarkerMessage {
+	return {
+		id: newMessageId(),
+		role: "custom",
+		customType: "probe-edge",
+		content: "",
+		display: true,
+		details: { report },
+		timestamp: Date.now(),
+	};
+}
+
 /** The plan presentation block: pure UI history (a frozen snapshot), no
  *  model face — toLlmMessages filters it. `planCallId` keys idempotent
- *  emission (one block per successful plan_init call). */
+ *  emission (one block per successful plan tool call — plan_batch, or
+ *  plan_init in records made before the coach update). */
 export function newPlanBlockMessage(
 	planCallId: string,
 	block: unknown,
@@ -630,6 +742,56 @@ function resultIdsFrom(messages: readonly AgentMessage[]): Set<string> {
 	return ids;
 }
 
+// ─── fresh-context boundaries (coach-planner design §4.6/§4.7) ──────────────
+
+/** The marker a kind's model context starts at: the teacher at the latest
+ *  node-handoff, the planner at a planner-wake that is the latest boundary. */
+export type ContextBoundary = "node-handoff" | "planner-wake";
+
+/** The boundary type of an agent kind: "node-handoff" for the teacher,
+ *  "planner-wake" for the planner, none for every other kind (prober,
+ *  practice, build read the full record). */
+export function contextBoundaryForKind(kind: string): ContextBoundary | undefined {
+	return kind === "teacher" ? "node-handoff" : kind === "planner" ? "planner-wake" : undefined;
+}
+
+/** Index of the boundary marker a context of this type starts at, or -1:
+ *  "node-handoff" → the latest node-handoff marker; "planner-wake" → the
+ *  latest planner-wake marker when it comes after the latest node-handoff
+ *  (it is the latest boundary), else -1 (the first planning reads the full
+ *  record). */
+export function contextBoundaryIndex(messages: readonly (LhMessage | AgentMessage)[], boundary: ContextBoundary): number {
+	let handoff = -1;
+	let wake = -1;
+	for (let i = 0; i < messages.length; i++) {
+		const m = messages[i] as { role?: string; customType?: string };
+		if (m.role !== "custom") continue;
+		if (m.customType === "node-handoff") handoff = i;
+		else if (m.customType === "planner-wake") wake = i;
+	}
+	if (boundary === "node-handoff") return handoff;
+	return wake > handoff ? wake : -1;
+}
+
+/** The fresh-context boundary of the agent the record's next turn builds
+ *  (agentKindFor), or -1. Context accounting treats it as a reset, the
+ *  same way it treats a compaction marker. Practice and build records hold
+ *  no boundary markers, so this is -1 for them. */
+export function nextContextBoundaryIndex(messages: readonly (LhMessage | AgentMessage)[]): number {
+	const boundary = contextBoundaryForKind(agentKindFor(messages as readonly LhMessage[]));
+	return boundary ? contextBoundaryIndex(messages, boundary) : -1;
+}
+
+/** The tool-call ids of every assistant message in the span. */
+function callIdsFrom(messages: readonly AgentMessage[]): Set<string> {
+	const ids = new Set<string>();
+	for (const m of messages) {
+		if ((m as { role?: string }).role !== "assistant") continue;
+		for (const block of (m as AssistantMessage).content) if (block.type === "toolCall") ids.add(block.id);
+	}
+	return ids;
+}
+
 function expandUserCitations(message: UserMessage): UserMessage {
 	if (typeof message.content === "string") return { ...message, content: expandCitationsForModel(message.content) };
 	return { ...message, content: message.content.map((block) => (block.type === "text" ? { ...block, text: expandCitationsForModel(block.text) } : block)) };
@@ -650,10 +812,21 @@ function expandUserCitations(message: UserMessage): UserMessage {
  *   Error/aborted generations do not: Pi drops those assistant messages,
  *   so manufacturing their results would leave orphan results on the wire.
  *
+ * - with a `boundary` (the teacher's and planner's fresh context,
+ *   coach-planner design §4.6/§4.7), rendering starts AT the latest
+ *   boundary marker of that type (contextBoundaryIndex): the marker's
+ *   content is the first message after the leading system message and
+ *   nothing before it renders. A compaction whose kept message lies after
+ *   the boundary applies inside the range as usual; one whose kept message
+ *   lies at or before it is ignored, and compaction markers inside the
+ *   range never render as text. A tool result whose call lies before the
+ *   rendered range is dropped (never an orphan on the wire). Without a
+ *   boundary marker of that type the output is exactly the no-option one.
+ *
  * Contract (pi-agent-core): never throws — an unknown shape passes
  * through untouched rather than killing the loop.
  */
-export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
+export function toLlmMessages(messages: readonly AgentMessage[], options: { boundary?: ContextBoundary } = {}): Message[] {
 	// THE COMPACTION CUT (owner round 14, 2026-10-05): the ACTIVE marker
 	// (the newest — chained compactions rule last) names the first kept
 	// message; everything before it is replaced by the marker's content
@@ -662,12 +835,15 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	// whose stored positions still lie after the cut. A cut naming a
 	// missing id degrades honestly (everything renders — never throw).
 	const lhMessages = messages as readonly LhMessage[];
+	const boundary = options.boundary ? contextBoundaryIndex(messages, options.boundary) : -1;
 	const active = activeCompactionOf(lhMessages);
-	let start = 0;
+	let start = boundary >= 0 ? boundary : 0;
 	let head: Message | null = null;
 	if (active) {
 		const kept = keptIndexFor(lhMessages, active);
-		if (kept > 0) {
+		// The boundary wins over a compaction that summarised pre-boundary
+		// history: only a kept message AFTER the boundary resolves a head.
+		if (kept > Math.max(boundary, 0)) {
 			start = kept;
 			head = {
 				role: "user",
@@ -692,20 +868,27 @@ export function toLlmMessages(messages: readonly AgentMessage[]): Message[] {
 	const out: Message[] = [];
 	if (leading) out.push(leading);
 	if (head) out.push(head);
-	for (let i = leading ? Math.max(start, 1) : start; i < messages.length; i++) {
+	const first = leading ? Math.max(start, 1) : start;
+	// Under a boundary, results pair only with calls inside the rendered
+	// range (defensive: the app appends boundaries after a completed answer).
+	const renderedCalls = boundary >= 0 ? callIdsFrom(messages.slice(first)) : null;
+	for (let i = first; i < messages.length; i++) {
 		const m = messages[i]!;
 		const role = (m as { role?: string }).role;
+		if (renderedCalls && role === "toolResult" && !renderedCalls.has((m as ToolResultMessage).toolCallId)) continue;
 		if (role === "custom") {
 			const marker = m as LhMarkerMessage;
 			// UI-only markers: plan blocks, and problem dismissals (the
 			// synthesized conclude pair carries the model's face).
 			// Empty side markers carry no model-facing exchange.
-			if (marker.customType === "plan-block" || marker.customType === "problem-dismissed") continue;
+			if (marker.customType === "plan-block" || marker.customType === "plan-update" || marker.customType === "probe-edge" || marker.customType === "problem-dismissed") continue;
 			if (marker.customType === "side-question" && !marker.content) continue;
 			// The head supersedes every compaction marker, not only its own
 			// stored position. Without a resolved head, preserve the existing
-			// full-history fallback, including the summary text.
-			if (marker.customType === "compaction" && head !== null) continue;
+			// full-history fallback, including the summary text. Under a
+			// boundary a compaction marker is the head's source, superseded,
+			// or ignored — never text.
+			if (marker.customType === "compaction" && (head !== null || boundary >= 0)) continue;
 			const problemSubmission = marker.customType === "plugin-problem-submission" ? readPluginProblemSubmission(marker.details) : null;
 			out.push({
 				role: "user",
@@ -925,6 +1108,41 @@ export function hasProbeDone(messages: readonly LhMessage[]): boolean {
 	return probeDoneResultIds(messages).size > 0;
 }
 
+/** The three teaching-session agents (coach-planner design D1). */
+export type TeachingAgentKind = "prober" | "planner" | "teacher";
+
+/** Which agent a teaching session's next turn builds (coach-planner design
+ *  §4.1), derived from the record alone:
+ *  - "prober" until a concluded probe_done (hasProbeDone);
+ *  - "teacher" once a node-handoff marker exists and no planner-wake
+ *    marker follows the latest node-handoff;
+ *  - "planner" otherwise (the probe is done and the plan is not accepted
+ *    yet, or a planner-wake is the latest of the two markers). */
+export function agentKindFor(messages: readonly LhMessage[]): TeachingAgentKind {
+	if (!hasProbeDone(messages)) return "prober";
+	let handoff = -1;
+	let wake = -1;
+	messages.forEach((m, i) => {
+		if (m.role !== "custom") return;
+		if (m.customType === "node-handoff") handoff = i;
+		else if (m.customType === "planner-wake") wake = i;
+	});
+	return handoff >= 0 && wake < handoff ? "teacher" : "planner";
+}
+
+/** Has the learner accepted the plan (any node-handoff marker)? Before
+ *  that, plan_batch replaces the whole plan; after it, plan_batch appends. */
+export function hasNodeHandoff(messages: readonly LhMessage[]): boolean {
+	return messages.some((m) => m.role === "custom" && m.customType === "node-handoff");
+}
+
+/** A teach record from before the coach update (coach-planner design O4):
+ *  its transcript holds a plan_init tool call. Such records stay readable
+ *  but take no further turns. The caller checks the record kind. */
+export function isLegacyTeachRecord(messages: readonly LhMessage[]): boolean {
+	return messages.some((m) => m.role === "assistant" && m.content.some((b) => b.type === "toolCall" && b.name === "plan_init"));
+}
+
 /** Every toolResult id in the record — answer-event validation (the call
  *  must be a DANGLING question call, not an already-answered one). */
 export function answeredCallIds(messages: readonly LhMessage[]): Set<string> {
@@ -990,8 +1208,10 @@ export function nativeInputCause(message: AgentMessage, history: readonly AgentM
 	if (message.role === "system" || message.role === "assistant") return "neutral";
 	if (message.role === "custom") {
 		if (["probe-handoff", "subagent-steer", "subagent-abort"].includes(message.customType)) return "automatic";
-		if (["practice-thinking", "plugin-problem-submission", "practice-next"].includes(message.customType)) return "learner";
-		return ["graph-context", "plan-block", "problem-dismissed", "compaction", "side-question", "side-question-told", "build-context", "build-activity", "build-return"].includes(message.customType) ? "neutral" : "unrecognizable";
+		// The node handoff rides a foreground learner input (plan-accept now;
+		// a passing answer later), so it counts as the learner's.
+		if (["practice-thinking", "plugin-problem-submission", "practice-next", "node-handoff"].includes(message.customType)) return "learner";
+		return ["graph-context", "plan-block", "problem-dismissed", "compaction", "side-question", "side-question-told", "build-context", "build-activity", "build-return", "planner-wake", "coach-card", "plan-update", "probe-edge"].includes(message.customType) ? "neutral" : "unrecognizable";
 	}
 	if (message.role === "toolResult") {
 		const pluginAnswer = readPluginQuestionAnswer(message.details);
@@ -1040,8 +1260,22 @@ export function reconstructRequestCause(messages: readonly LhMessage[]): Reconst
 	return resolve();
 }
 
+/** The app markers an answer request appends after the answer's tool
+ *  result, before the reaction turn runs (coach-planner design §4.5–§4.7):
+ *  the mentor's plan-update and coach-card (and the probe's edge report),
+ *  and the advance's node-handoff or planner-wake. They are the answer's
+ *  consequences, so a reaction is still owed when the record ends on them. */
+const AFTER_ANSWER_MARKERS = new Set(["plan-update", "coach-card", "probe-edge", "node-handoff", "planner-wake"]);
+
 export function needsContinuation(record: readonly LhMessage[]): boolean {
-	const messages = tailIgnoringSideQuestions(record);
+	let end = record.length;
+	while (end > 0) {
+		const m = record[end - 1]!;
+		if (isSideQuestionMarker(m) || (m.role === "custom" && AFTER_ANSWER_MARKERS.has(m.customType))) end--;
+		else break;
+	}
+	// Only markers that follow a tool result are the answer's consequences.
+	const messages = end < record.length && record[end - 1]?.role === "toolResult" ? record.slice(0, end) : tailIgnoringSideQuestions(record);
 	if (pluginQuestionCallsOf(messages).some(call => call.status === "answerable" || call.status === "unreadable")) return false;
 	const last = messages[messages.length - 1];
 	if (!last || (last as { role?: string }).role !== "toolResult") return false;

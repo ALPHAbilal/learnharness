@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
 import { slotsConfigured } from "@/src/core";
-import { compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
+import { compactionInFlight, getChat, mentorInFlight, isTurnRunning, lessonProgressOf, readSettingsRecord, turnFailure } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +36,11 @@ export default async function ChatPage({
 			// attach (busy shimmer + poll), never resurrect the stale record.
 			initiallyInFlight={isTurnRunning(chat.id)}
 			initiallyCompacting={compactionInFlight(chat.id)}
+			// The mentor (the learner's "Coach") is reviewing an answer at mount.
+			initiallyCoaching={mentorInFlight(chat.id)}
+			// Plan-node states, Start, legacy and coverage gates (coach-planner
+			// design §4.10); the GET payload's `progress` keeps it fresh.
+			initialProgress={lessonProgressOf(chat)}
 		/>
 	);
 }

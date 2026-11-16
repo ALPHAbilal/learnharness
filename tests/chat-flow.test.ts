@@ -67,6 +67,7 @@ const QUIZ_INPUT = {
 	explanation: "Mercury is the innermost planet.",
 	type: "check",
 	nodeId: "planet-order",
+	facts: ["f-planet-order"],
 };
 
 /** Turn 1: a bit of reasoning, then the quiz tool call. Turn 2: plain text.
@@ -326,7 +327,8 @@ describe("teacher chat flow (scripted model)", () => {
 		// grouping canon: consecutive assistant/toolResult messages bounded
 		// by user messages form one group). ──
 		const saved2 = chatStore.getChat(chat.id)!;
-		// Native: user, assistant, answer toolResult, reaction assistant.
+		// Native: user, assistant, answer toolResult, reaction assistant (the
+		// probe has no mentor: no coach-card).
 		assert.equal(saved2.messages.length, 4, "the answer + reaction append natively");
 		assert.equal((saved2.messages[2] as { role?: string }).role, "toolResult", "the graded answer is the call's tool result");
 		const view2 = projectView(saved2.messages);
@@ -662,6 +664,7 @@ describe("teacher chat flow (scripted model)", () => {
 			question: "What is Nietzsche's genealogical claim about religion?",
 			type: "check",
 			nodeId: "genealogy",
+			facts: ["f-genealogy"],
 			options: [{ label: "A cultural diagnosis" }, { label: "Atheism as a conclusion" }],
 			correctAnswer: "cultural-diagnosis", // the exact live failure shape: a slug, no match
 			explanation: "Genealogy diagnoses, it does not convert.",
@@ -742,6 +745,7 @@ describe("teacher chat flow (scripted model)", () => {
 			question: "Lewis's indexical analysis of 'actual' — which is it?",
 			type: "check",
 			nodeId: "indexicals",
+			facts: ["f-indexicals"],
 			options: "definitely not a JSON array — denim all the way down", // ← unhealable garbage
 			correctAnswer: "indexical",
 			explanation: "Indexical: every world is actual to its own inhabitants.",
@@ -885,6 +889,7 @@ describe("canonical persistence failures", () => {
 		const save = chatStore.saveMessages;
 		let writes = 0;
 		chatStore.saveMessages = (id, messages) => {
+			// 1: the answer (write-ahead), 2: the reply.
 			if (++writes === 2) throw new Error("synthetic reply save failure");
 			return save(id, messages);
 		};
@@ -896,6 +901,7 @@ describe("canonical persistence failures", () => {
 			assert.ok(body.indexOf("The reply could not be saved.") < body.indexOf("[DONE]"));
 			assert.equal(isTurnRunning(chat.id), false);
 			assert.equal(runningTurn(chat.id), undefined);
+			// The accepted answer (saved before the turn ran).
 			assert.equal(chatStore.getChat(chat.id)!.messages.at(-1)?.role, "toolResult");
 			// The normal submitter may not reach GET /stream until AFTER the
 			// failing turn has left the live registry. It must still see it.
@@ -1301,6 +1307,7 @@ it("explain tool call persists as a pending part; the free-text answer reveals t
 		question: "Explain why Mercury is hard to observe.",
 		correctAnswer: "Its small angular separation from the Sun — it never strays far from the Sun in our sky.",
 		nodeId: "planet-order",
+		facts: ["f-planet-order"],
 		type: "check", // the teach explain's role field (owner, 2026-10-09)
 	};
 	const { engine, calls } = scriptedTeacher((cs) => [

@@ -18,8 +18,14 @@
 import type { PlanBlockData, PlanTree } from "./contracts.ts";
 import { derivePlanStatusesLh } from "./contracts.ts";
 import type { LhMessage } from "./native-messages.ts";
-import { newPlanBlockMessage } from "./native-messages.ts";
+import { newPlanBlockMessage, newProbeEdgeMessage } from "./native-messages.ts";
+import type { EdgeReport } from "./probe-edge.ts";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
+
+/** The plan tools whose successful results present a plan block:
+ *  plan_batch (the planner, coach-planner design §4.2) and plan_init
+ *  (records made before the coach update). */
+export const PLAN_TOOL_NAMES: ReadonlySet<string> = new Set(["plan_batch", "plan_init"]);
 
 /** The message part the chat renderer consumes (TeacherUIDataParts key
  *  "plan-block" — the SDK strips the `data-` prefix). Kept for the client
@@ -84,7 +90,7 @@ export function planBlocksFor(
 	for (const m of newMessages) {
 		if ((m as { role?: string }).role !== "toolResult") continue;
 		const result = m as ToolResultMessage & { id: string };
-		if (result.toolName !== "plan_init") continue;
+		if (!PLAN_TOOL_NAMES.has(result.toolName)) continue;
 		const ok = (result.details as { ok?: unknown } | undefined)?.ok;
 		if (ok !== true) continue;
 		if (emitted.has(result.toolCallId)) continue;
@@ -92,4 +98,24 @@ export function planBlocksFor(
 	}
 	if (!last) return [];
 	return [newPlanBlockMessage(last.toolCallId, snapshot(tree, transcript))];
+}
+
+/**
+ * The probe-edge emission seam (pure), planBlocksFor's twin: the learner's
+ * probe-edge marker for a successful probe_done result among `newMessages`
+ * whose details carry the edge report (probe_done puts it there when the
+ * probe ran on a map). Idempotent: nothing when the record already holds a
+ * probe-edge marker (probe_done succeeds once per session).
+ */
+export function probeEdgesFor(record: readonly LhMessage[], newMessages: readonly LhMessage[]): LhMessage[] {
+	if (record.some((m) => (m as { role?: string }).role === "custom" && (m as { customType?: string }).customType === "probe-edge")) return [];
+	for (const m of newMessages) {
+		if ((m as { role?: string }).role !== "toolResult") continue;
+		const result = m as ToolResultMessage & { id: string };
+		if (result.toolName !== "probe_done" || result.isError) continue;
+		const details = result.details as { ok?: unknown; report?: EdgeReport } | undefined;
+		if (details?.ok !== true || !details.report) continue;
+		return [newProbeEdgeMessage(details.report)];
+	}
+	return [];
 }

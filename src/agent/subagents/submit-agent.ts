@@ -46,7 +46,10 @@ export function healStringifiedArrays(raw: unknown): unknown {
 }
 
 export async function runSubmitAgent<T>(opts: {
-	role: ModelRole;
+	/** The core model role (captures, provider-event recording). Optional
+	 *  when an explicit engine is supplied (the mentor runs on the session's
+	 *  own engine and has no core role). */
+	role?: ModelRole;
 	toolName: string;
 	toolDescription: string;
 	parameters: TSchema;
@@ -76,6 +79,10 @@ export async function runSubmitAgent<T>(opts: {
 	 *  a problem string yields an isError result (invalidInputResult) →
 	 *  the model retries within maxTurns. null = accept. */
 	validate?: (value: T) => string | null;
+	/** Skip the shared worker-request pool (runSubagent's pass-through): an
+	 *  awaited foreground step (the mentor) must not queue behind background
+	 *  imports, exactly as the compaction summarizer does not. */
+	bypassWorkerRequestAdmission?: boolean;
 }): Promise<T> {
 	let submitted: T | undefined;
 	const result = await runSubagent(
@@ -114,6 +121,7 @@ export async function runSubmitAgent<T>(opts: {
 			maxTurns: opts.maxTurns ?? 4,
 			abortSignal: opts.signal,
 			chatId: opts.chatId,
+			...(opts.bypassWorkerRequestAdmission ? { bypassWorkerRequestAdmission: true } : {}),
 			onAssistantMessage: (message, step) =>
 				opts.onStep(
 					message.usage,

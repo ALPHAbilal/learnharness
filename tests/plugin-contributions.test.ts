@@ -23,7 +23,7 @@ process.env.LH_AUTH_FILE = path.join(DATA, "auth.json");
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async () => { throw Error("Unexpected network request in plugin contribution tests"); };
 after(() => { globalThis.fetch = originalFetch; fs.rmSync(DATA, { recursive: true, force: true }); });
-const { createTeacherAgent, createProberAgent, createPracticeAgent, composeInstructions, CONVERSATION_TOOL_NAMES } = await import("../src/agent/teacher-agent.ts");
+const { createTeacherAgent, createProberAgent, createPlannerAgent, createPracticeAgent, composeInstructions, CONVERSATION_TOOL_NAMES } = await import("../src/agent/teacher-agent.ts");
 
 const textResult = (text = "native"): AgentToolResult => ({ content: [{ type: "text", text }], details: undefined });
 function native(name = "plugin_tool", execute: AgentTool<any>["execute"] = async () => textResult()): AgentTool<any> {
@@ -156,6 +156,18 @@ test("all roles append instructions/tools without replacing builtin prompt, gate
 		builders[role]({ ...opts, chatId: undefined, pluginContributions: f.host.agentContributions });
 		assert.equal(contexts.length, count);
 	}
+	// The planner (coach-planner design §4.1) takes NO contributions, like
+	// build branches: same prompt and tools with or without the resolver,
+	// and the factory is never consulted. Its builtins are reserved names.
+	const plannerContexts = contexts.length;
+	const plannerOpts: AgentBuildOptions = { engine: engine(), chatId: "chat-planner", toolToggles: { research: false } };
+	const plannerCore = createPlannerAgent({ chatId: "chat-planner" } as never, plannerOpts);
+	const plannerExtended = createPlannerAgent({ chatId: "chat-planner" } as never, { ...plannerOpts, pluginContributions: f.host.agentContributions });
+	assert.equal(plannerExtended.state.systemPrompt, composeInstructions("planner"));
+	assert.deepEqual(plannerExtended.state.tools.map(tool => tool.name), plannerCore.state.tools.map(tool => tool.name));
+	assert.deepEqual(plannerCore.state.tools.map(tool => tool.name), ["plan_batch", "read", "ls", "find", "grep"]);
+	for (const tool of plannerCore.state.tools) assert.ok((CONVERSATION_TOOL_NAMES as readonly string[]).includes(tool.name));
+	assert.equal(contexts.length, plannerContexts);
 	const running = builders.teacher({ engine: engine(), chatId: "running", pluginContributions: f.host.agentContributions });
 	const prompt = running.state.systemPrompt;
 	await f.host.setEnabled("example", false);

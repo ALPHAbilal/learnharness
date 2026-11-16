@@ -73,6 +73,64 @@ export function parseOptionsIfString<T>(options: string | T[] | undefined): unkn
 	return options;
 }
 
+/** The fact-tag wobble guard (coach-planner design §4.4): a bare string
+ *  `facts` value is wrapped into a one-item array and a JSON-encoded array
+ *  is parsed. Shared by the tools' prepareArguments (pre-validation) and
+ *  the display parse (the persisted call keeps the raw arguments). Any
+ *  other value is returned untouched — validation then reports honestly. */
+export function normalizeFactTags(facts: unknown): unknown {
+	if (typeof facts !== "string") return facts;
+	const trimmed = facts.trim();
+	if (trimmed.startsWith("[")) {
+		try {
+			const parsed: unknown = JSON.parse(trimmed);
+			if (Array.isArray(parsed)) return parsed;
+		} catch {
+			/* not JSON — wrap the literal below */
+		}
+	}
+	return [facts];
+}
+
+/** The same guard over a whole argument object: returns a copy with
+ *  `facts` normalized when that changes anything, else the input itself. */
+export function withNormalizedFactTags<T>(args: T): T {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+	const facts = (args as { facts?: unknown }).facts;
+	const normalized = normalizeFactTags(facts);
+	return normalized === facts ? args : ({ ...args, facts: normalized } as T);
+}
+
+/** The probe's answer key (owner, 2026-11-15): on a single-answer `probe`
+ *  question the FIRST option written is the correct one, by rule — the
+ *  dock shuffles before the learner sees them, so the position gives
+ *  nothing away. Each option without a `value` gets its trimmed label
+ *  (exactly the key normalizeOptions falls back to), and `correctAnswer`
+ *  becomes the first option's value, overriding whatever the model sent.
+ *  A multiSelect question keeps its own correctAnswer. The persisted call
+ *  keeps the RAW arguments, so every seam that reads a probe call (the
+ *  boundary, the display parse, the server's grading) runs this first.
+ *  Anything it cannot read is returned untouched. */
+export function withProbeAnswerKey<T>(args: T): T {
+	if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+	const o = args as Record<string, unknown>;
+	if (o.multiSelect === true || o.multiSelect === "true") return args;
+	const options = parseOptionsIfString(o.options as string | unknown[] | undefined);
+	if (!Array.isArray(options) || options.length === 0) return args;
+	const keyed = options.map((option: unknown) => {
+		if (!option || typeof option !== "object" || Array.isArray(option)) return option;
+		const { label, value } = option as { label?: unknown; value?: unknown };
+		if (typeof value === "string" && value.trim().length > 0) return option;
+		return typeof label === "string" ? { ...option, value: label.trim() } : option;
+	});
+	const first = keyed[0] as { value?: unknown } | null | undefined;
+	const key = first && typeof first === "object" && typeof first.value === "string" ? first.value.trim() : "";
+	if (key.length === 0) return args;
+	// Already keyed: the SAME object back (pi's fast path).
+	if (options === o.options && keyed.every((option, i) => option === options[i]) && o.correctAnswer === key) return args;
+	return { ...o, options: keyed, correctAnswer: key } as T;
+}
+
 // ─── cross-field authoring validation (tool-schema refinements) ──────────
 // Enforced at the tool-call boundary (see the superRefines below): an invalid
 // question NEVER reaches the learner — the SDK returns the validation error
@@ -113,10 +171,14 @@ export function askOptionProblems(options: Array<{ label: string; value?: string
  *  gradeable. Empty result = a quiz the dock can arm and grade faithfully. */
 export function quizInputProblems(input: {
 	options: Array<{ label: string; value?: string }>;
-	correctAnswer: string | string[];
+	correctAnswer?: string | string[];
 	multiSelect?: boolean;
 }): string[] {
 	const { problems, keys } = optionProblems(input.options);
+	if (input.correctAnswer === undefined) {
+		problems.push("correctAnswer is required — provide the value (or label) of the correct option(s).");
+		return problems;
+	}
 
 	// Preserve exact option keys before trying copy-syntax cleanup — the
 	// same option-aware coercion runs at the display and grading seams.
@@ -250,22 +312,33 @@ const predictCheckType = Type.Union([Type.Literal("predict"), Type.Literal("chec
 });
 
 
+/** The fact tags a graded question carries (coach-planner design §4.4):
+ *  the ids of the plan facts it tests. The teacher's quiz/explain require
+ *  at least one; the prober's probe/recall carry them optionally (required
+ *  at call time once the app has a probe fact list). A bare string is
+ *  wrapped and a JSON-encoded array parsed before validation
+ *  (question-facts.ts normalizeFactTags). */
+const FACTS_DESCRIPTION = "The ids of the fact(s) this question tests — copy them exactly from the node handoff or the latest coach card.";
+const factsField = Type.Array(Type.String(), { minItems: 1, description: FACTS_DESCRIPTION });
+
 /** The TEACH-side quiz object. The required pair leads the property
  *  order (owner, 2026-10-09): glm-5.3 dropped `type`/`nodeId` on long
  *  calls BECAUSE they trailed every content field — fields generated
  *  first get dropped least. The order is also the authoring order:
- *  commit to the node and the question's role, then write the question. */
+ *  commit to the node and the question's role, then write the question.
+ *  `facts` follows the pair (coach-planner design §4.4). */
 export const quizInputObject = Type.Object({
 	type: predictCheckType,
 	nodeId: Type.String({
 		description:
 			"REQUIRED plan-tree node id this question is about — must EXACTLY match one of this session's " +
-			"plan_init node slugs (validated at call time; a mismatched id is rejected back to you). " +
+			"plan node ids (validated at call time; a mismatched id is rejected back to you). " +
 			"The lesson's position on the map derives from these tags (the node the latest tagged question is about is " +
 			"where the map stands; earlier ones count as visited). A node takes as many questions as it deserves: stay on " +
 			"one node for as many turns as the understanding needs — one reasoning step at a time, never rush forward. " +
 			"For off-map checks use ask_user_question.",
 	}),
+	facts: factsField,
 	...quizInputBase.properties,
 });
 
@@ -276,18 +349,39 @@ export const quizInputObject = Type.Object({
  *  teacher, so nothing invites misuse). Structurally identical to
  *  quizInputBase (the old superRefine never reached the wire — it ran at
  *  the call boundary, where quizInputProblems runs now). */
-export const probeQuizInputSchema = quizInputBase;
+export const probeQuizInputSchema = Type.Object({
+	question: quizInputBase.properties.question,
+	options: quizInputBase.properties.options,
+	// The probe's fact tags (coach-planner design §4.4): optional in the
+	// schema, required at call time while the app holds a probe fact list
+	// (tools.ts). Placed after the leading required fields.
+	facts: Type.Optional(factsField),
+	multiSelect: quizInputBase.properties.multiSelect,
+	explanation: quizInputBase.properties.explanation,
+	// The probe's answer key (withProbeAnswerKey): a single-answer question's
+	// correct option is the FIRST one written, so correctAnswer is optional
+	// here and required (by quizInputProblems) only for multiSelect.
+	correctAnswer: Type.Optional(
+		Type.Union([Type.String(), Type.Array(Type.String())], {
+			description:
+				"multiSelect questions only: the values of ALL the correct options, as an array of strings. " +
+				"Do not send it for a single-answer question — the first option is the correct one.",
+		}),
+	),
+	details: quizInputBase.properties.details,
+});
 
 /** The DISPLAY parse for persisted quiz calls (tool-parts.ts): the base
  *  + `type` as an OPTIONAL plain string (old records carry none, and
  *  Value.Clean keeps a key only when the schema knows it — the dock would
  *  otherwise lose the role it renders and gates by). Normalization is
  *  normalizeQuizType at the read seam; nodeId stays stripped (unknown
- *  key). The PROBE quiz parses against the bare base — probe calls carry
- *  no type. */
+ *  key). `facts` is an OPTIONAL string array so parsed parts keep the
+ *  tags (old records carry none). */
 export const quizDisplayInputSchema = Type.Object({
 	...quizInputBase.properties,
 	type: Type.Optional(Type.String()),
+	facts: Type.Optional(Type.Array(Type.String())),
 });
 
 // ─── the explain tool (free-recall quizzing, owner 2026-09-27) ─────────────
@@ -330,23 +424,35 @@ export const explainInputObject = Type.Object({
 	nodeId: Type.String({
 		description:
 			"REQUIRED plan-tree node id this question is about — must EXACTLY match one of this session's " +
-			"plan_init node slugs (validated at call time; a mismatched id is rejected back to you). " +
+			"plan node ids (validated at call time; a mismatched id is rejected back to you). " +
 			"The lesson's position on the map derives from these tags (the node the latest tagged question is about is " +
 			"where the map stands; earlier ones count as visited). A node takes as many questions as it deserves: stay on " +
 			"one node for as many turns as the understanding needs — one reasoning step at a time, never rush forward. " +
 			"For off-map checks use ask_user_question.",
 	}),
+	facts: factsField,
 	...explainInputBase.properties,
+});
+
+/** The PROBE-side recall declaration: the explain base with OPTIONAL fact
+ *  tags after the leading required fields (required at call time while
+ *  the app holds a probe fact list — tools.ts). */
+export const probeExplainInputSchema = Type.Object({
+	question: explainInputBase.properties.question,
+	correctAnswer: explainInputBase.properties.correctAnswer,
+	facts: Type.Optional(factsField),
+	details: explainInputBase.properties.details,
 });
 
 /** The DISPLAY parse for persisted explain calls (tool-parts.ts): the
  *  base + `type` as an OPTIONAL plain string — exactly the quiz display
  *  pattern. Old records carry none; questionNeedsReveal treats them as
- *  checks (the standing default). nodeId stays stripped (unknown key).
- *  The PROBE recall parses against the bare base. */
+ *  checks (the standing default). nodeId stays stripped (unknown key);
+ *  `facts` is kept as an OPTIONAL string array. */
 export const explainDisplayInputSchema = Type.Object({
 	...explainInputBase.properties,
 	type: Type.Optional(Type.String()),
+	facts: Type.Optional(Type.Array(Type.String())),
 });
 
 /** The explain authoring contract: the commitment must exist. Empty
@@ -396,7 +502,7 @@ export const askInputSchema = Type.Object({
 export type QuizToolInput = Static<typeof quizInputObject>;
 export type AskToolInput = Static<typeof askInputSchema>;
 export type ExplainToolInput = Static<typeof explainInputObject>;
-export type ProbeExplainToolInput = Static<typeof explainInputBase>;
+export type ProbeExplainToolInput = Static<typeof probeExplainInputSchema>;
 
 
 /** A real selected answer, in the order the options were displayed. */

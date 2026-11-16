@@ -68,6 +68,7 @@ const QUIZ = {
 	explanation: "The body carries data.",
 	type: "check",
 	nodeId: "http",
+	facts: ["f-http"],
 };
 
 function graded(values: string[]) {
@@ -102,7 +103,9 @@ describe("build branch turn cargo", () => {
 		const saved = chatStore.getChat(parent.id)!;
 		const resultIndex = saved.messages.findIndex((m) => m.role === "toolResult" && m.toolCallId === "call-q");
 		const returnIndex = saved.messages.findIndex((m) => m.role === "custom" && m.customType === "build-return");
-		assert.ok(resultIndex > 0 && returnIndex === resultIndex + 1, "the summary lands right after the answer, never before it");
+		// The answer's coach card (the mentor's hidden marker) comes first.
+		assert.equal((saved.messages[resultIndex + 1] as { customType?: string }).customType, "coach-card");
+		assert.ok(resultIndex > 0 && returnIndex === resultIndex + 2, "the summary lands right after the answer (and its card), never before it");
 		assert.equal(saved.buildReturns?.[0]?.delivered, true);
 		assert.match(calls[1]!, /\[Build branch returned\]/);
 		assert.match(calls[1]!, /solid: status codes/);

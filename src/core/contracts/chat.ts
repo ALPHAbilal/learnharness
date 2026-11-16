@@ -8,7 +8,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { LhMessage } from "../native-messages.ts";
 import type { Phase3 } from "../phases.ts";
-import type { PlanNodeStatus, PlanTree } from "./plan.ts";
+import type { PlanArrow, PlanFact, PlanNodeStatus, PlanTree } from "./plan.ts";
 import type { EmissionStats } from "./graph.ts";
 
 // ─── Chat records (the session store's on-disk format) ───────────────────────
@@ -65,6 +65,10 @@ export interface ChatRecord {
 	kind?: ChatKind;
 	/** The session's plan tree, written by the native plan tools. */
 	tree?: PlanTree;
+	/** Teaching sessions only: the facts (and arrows) the prober's graded
+	 *  questions must test before a plan exists (coach-planner design §4.4,
+	 *  §4.5 probe mode). Filled by the coach; absent until then. */
+	probeFacts?: ProbeFacts;
 	/** Append-only usage log, separate from message history: one entry per billed
 	 * turn, deduplicated by request identity. messageId associates usage with the
 	 * transcript; token/cost aggregates are computed from the log at read time. */
@@ -87,6 +91,44 @@ export interface ChatRecord {
 	 * supported version. Reads refuse records stamped newer than this build
 	 * so a downgraded app cannot rewrite an unsupported record. */
 	version?: number;
+}
+
+/** The learner's level as the prober read it when it drew the probe map
+ *  (draw_map's `startLevel`). */
+export type ProbeStartLevel = "new" | "some" | "experienced";
+
+/** Where the learner stands on one map fact, as the prober's `reflect`
+ *  set it (the app's certainty guard may have lowered `certainty`). */
+export interface ProbeMark {
+	state: "held" | "missed" | "wrong-idea";
+	certainty: "low" | "medium" | "high";
+	/** The learner's own words or choice that show it. */
+	proof: string;
+	/** wrong-idea only: what the learner thinks is true. */
+	believed?: string;
+}
+
+/** The probe map (ChatRecord.probeFacts): what to test before a plan
+ *  exists, drawn by the prober (draw_map) and kept by it (reflect). Fact
+ *  ids are the ids the probe/recall tools' `facts` reference. A list
+ *  without `marks` (an empty fallback list, or a map from before draw_map)
+ *  is a legacy record: the probe tools enforce nothing on it. */
+export interface ProbeFacts {
+	facts: PlanFact[];
+	arrows: PlanArrow[];
+	/** The learner's level (draw_map). */
+	startLevel?: ProbeStartLevel;
+	/** Per fact id: the prober's latest mark. A fact without one is
+	 *  unknown. Present (possibly empty) on every map draw_map drew. */
+	marks?: Record<string, ProbeMark>;
+	/** The id of the last graded probe answer `reflect` covered. */
+	reflected?: string;
+	/** The answer message ids `reflect` voided (a flawed question): those
+	 *  answers count nowhere — not in the answer counts, the question
+	 *  budget or the edge report. At most 3. */
+	voided?: string[];
+	/** Legacy (the coach's digs, before draw_map): read, never written. */
+	digs?: Record<string, number>;
 }
 
 /** The chat record format this build writes and understands. */
@@ -263,12 +305,33 @@ export interface TurnUsage {
  *  artifact, and presenting still ends the turn (the verdict death,
  *  2026-09-26: the learner's next message is a natural reply — a change
  *  request or the go-ahead). */
+//  COACH-PLANNER (2026-11-14 design §4.8): the wake now builds the PLANNER
+//  (agentKindFor), which plans the first stretch as facts, arrows and at
+//  most 4 nodes with plan_batch; the learner accepts with Start.
 export const HANDOFF_TEXT =
-	"Next: plan the full teaching arc from my current understanding to the goal understanding. " +
-	"Apply the teaching methodology in your system prompt, and find the optimal way to teach me this. " +
-	"Find the unconditional truths, plan the motivated derivations/discoveries, so every reasoning step has to land as obviously true. " +
-	"Take your time here and really think this through. " +
-	"When it's genuinely reasoned out, call plan_init and present the plan; I'll accept it or ask for changes.";
+	"Next: plan the first stretch of the road from my current understanding toward my goal. " +
+	"Follow your planning instructions: facts, arrows, at most 4 nodes. " +
+	"When it is reasoned out, call plan_batch and present the plan; I will press Start or ask for changes.";
+
+/** The machine discriminator of the legacy-session refusal (coach-planner
+ *  design O4): a teach session created before the coach update stays
+ *  readable but cannot start another turn. */
+export const LEGACY_SESSION_CODE = "legacySession" as const;
+
+/** The refusal envelope for a turn on a legacy teach session — the same
+ *  `{error, code}` shape as the models-not-configured refusal. */
+export interface LegacySessionRefusal {
+	/** Human-readable — safe to render as-is. */
+	error: string;
+	code: typeof LEGACY_SESSION_CODE;
+}
+
+export function legacySessionRefusal(): LegacySessionRefusal {
+	return {
+		error: "This lesson was created before the coach update. It stays readable, but it cannot be continued. Start a new session to keep learning.",
+		code: LEGACY_SESSION_CODE,
+	};
+}
 
 // ─── Practice sessions (owner, 2026-10-04) — marker + ack texts ──────────────
 // Single-sourced here per the marker law: the model-facing text of every

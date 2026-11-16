@@ -76,6 +76,7 @@ function memoryLedgers(): GraphStore {
 	const chains: ReturnType<GraphStore["readChains"]> = [];
 	const coverage: ReturnType<GraphStore["readCoverage"]> = [];
 	const checkpoints: ReturnType<GraphStore["readCheckpoints"]> = [];
+	const evidence: ReturnType<GraphStore["readEvidence"]> = [];
 	const sources = new Map<string, ReturnType<GraphStore["readSources"]>[number]>();
 	let positions: ReturnType<GraphStore["readPositions"]> = {};
 	return {
@@ -83,6 +84,7 @@ function memoryLedgers(): GraphStore {
 		appendChain: (value) => { chains.push(value); }, readChains: () => structuredClone(chains),
 		appendCoverage: (value) => { coverage.push(value); }, readCoverage: () => structuredClone(coverage),
 		appendCheckpoint: (value) => { checkpoints.push(value); }, readCheckpoints: () => structuredClone(checkpoints),
+		appendEvidence: (value) => { evidence.push(value); }, readEvidence: () => structuredClone(evidence),
 		upsertSource: (value) => { sources.set(value.id, { ...value, extractions: sources.get(value.id)?.extractions ?? [] }); },
 		readSources: () => structuredClone([...sources.values()]),
 		deleteSources: (ids) => [...ids].reduce((n, id) => n + Number(sources.delete(id)), 0),

@@ -28,6 +28,9 @@ export interface DemoRunResult {
 	failedRequests: string[];
 	/** Value of the optional probe expression, when requested and successful. */
 	probeResult?: unknown;
+	/** What a learner would see but no error reports: code whose line breaks
+	 *  collapse, text too small to read. Present only when non-empty. */
+	readabilityProblems?: string[];
 	/** True when nothing above recorded anything. */
 	ok: boolean;
 }
@@ -350,6 +353,39 @@ export async function loadIsolatedPage(page: IsolatedPage, html: string): Promis
 
 // ─── Demo execution ──────────────────────────────────────────────────────────
 
+/** Smallest font size (px) a demo may use for visible HTML text. */
+export const MIN_READABLE_PX = 12;
+
+/** The readability gate (CS demos, 2026-11-14): a demo can run without a
+ *  single error and still be unreadable — the Flask demo set app.py in a
+ *  plain div and every line break collapsed. Evaluated in the page after it
+ *  settles; checks only text the element itself holds. SVG text is skipped
+ *  for size (its computed font-size ignores viewBox scaling), and canvas text
+ *  is invisible to the DOM. */
+const READABILITY_CHECK = `(() => {
+	const min = ${MIN_READABLE_PX};
+	const problems = [];
+	const name = (el) => el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") +
+		(typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().split(/\\s+/).join(".") : "");
+	const snippet = (text) => JSON.stringify(text.trim().replace(/\\s*\\n\\s*/g, " ⏎ ").slice(0, 40));
+	for (const el of document.body ? document.body.querySelectorAll("*") : []) {
+		const own = [...el.childNodes].filter((node) => node.nodeType === 3).map((node) => node.textContent).join("");
+		if (!own.trim()) continue;
+		const style = getComputedStyle(el);
+		if (style.display === "none" || style.visibility === "hidden") continue;
+		const box = el.getBoundingClientRect();
+		if (box.width === 0 || box.height === 0) continue;
+		const mono = /mono|courier|consolas|menlo/i.test(style.fontFamily);
+		if (mono && (style.whiteSpace === "normal" || style.whiteSpace === "nowrap") && /\\S[ \\t]*\\n\\s*\\S/.test(own))
+			problems.push("line breaks collapsed in " + name(el) + " (" + snippet(own) + ") — put code and literal text in <pre> or give it white-space: pre");
+		const size = parseFloat(style.fontSize);
+		if (!el.closest("svg") && size < min)
+			problems.push("text too small in " + name(el) + " (" + size + "px, minimum " + min + "px): " + snippet(own));
+		if (problems.length >= 10) break;
+	}
+	return problems;
+})()`;
+
 async function runDemo(html: string, opts: RunDemoOptions = {}): Promise<DemoRunResult> {
 	return withBrowserPage(page => runDemoOnPage(page, html, opts));
 }
@@ -363,6 +399,7 @@ export async function runDemoOnPage(page: import("puppeteer-core").Page, html: s
 	const failedRequests: string[] = [];
 	let probeResult: unknown;
 	let probed = false;
+	let readabilityProblems: string[] = [];
 
 	const onConsole = (msg: import("puppeteer-core").ConsoleMessage) => {
 		if (msg.type() === "error") consoleErrors.push(msg.text());
@@ -385,6 +422,13 @@ export async function runDemoOnPage(page: import("puppeteer-core").Page, html: s
 				}
 				probed = true;
 			}
+			// A check that cannot run proves nothing either way; it never
+			// blocks a demo on its own failure.
+			try {
+				readabilityProblems = await page.evaluate(READABILITY_CHECK) as string[];
+			} catch {
+				readabilityProblems = [];
+			}
 		} catch (err) {
 			if (err instanceof IsolatedPageCleanupError) throw err;
 			pageErrors.push(err instanceof Error ? err.message : String(err));
@@ -402,7 +446,8 @@ export async function runDemoOnPage(page: import("puppeteer-core").Page, html: s
 		pageErrors,
 		failedRequests,
 		...(probed ? { probeResult } : {}),
-		ok: consoleErrors.length === 0 && pageErrors.length === 0 && failedRequests.length === 0,
+		...(readabilityProblems.length > 0 ? { readabilityProblems } : {}),
+		ok: consoleErrors.length === 0 && pageErrors.length === 0 && failedRequests.length === 0 && readabilityProblems.length === 0,
 	};
 }
 

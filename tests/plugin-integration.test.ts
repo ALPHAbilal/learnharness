@@ -104,8 +104,8 @@ test("external native backend composes host, inference, persistent managed input
 		getChat: id => id === learningRecord.id ? JSON.parse(fs.readFileSync(learningFile, "utf8")) as ChatRecord : null,
 		listChats: () => structuredClone(summaries),
 	};
-	const graphReads: Pick<GraphStore, "readNodes" | "readChains" | "readCheckpoints" | "readCoverage" | "readSources" | "readPositions"> = {
-		readNodes: () => [], readChains: () => [], readCheckpoints: () => [], readCoverage: () => [], readSources: () => [], readPositions: () => ({}),
+	const graphReads: Pick<GraphStore, "readNodes" | "readChains" | "readCheckpoints" | "readCoverage" | "readSources" | "readPositions" | "appendEvidence" | "readEvidence"> = {
+		readNodes: () => [], readChains: () => [], readCheckpoints: () => [], readCoverage: () => [], readSources: () => [], readPositions: () => ({}), appendEvidence: () => {}, readEvidence: () => [],
 	};
 	const learning = createPluginLearningData({ directory: learningDirectory, chatStore: chatReads as ChatStore, graphStore: graphReads as GraphStore, isBusy: () => false, isCompacting: () => false, readMetadata: name => name === "format.json" ? { version: 1 } : null });
 

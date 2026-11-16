@@ -25,7 +25,7 @@ import { absorbed, pendingCallTool, SessionModel } from "../components/session-c
 import type { ChatInput } from "../src/core/input-events.ts";
 import type { LhMessage } from "../src/core/native-messages.ts";
 import { newUserMessage, newAnswerResult, newThinkingMessage, needsContinuation, endsInDismissal, pendingQuestionOf } from "../src/core/native-messages.ts";
-import { endsInFailedTurn, newCompactionMarker, newPlanBlockMessage, projectView } from "../src/core/index.ts";
+import { endsInFailedTurn, legacySessionRefusal, newCompactionMarker, newPlanBlockMessage, projectView } from "../src/core/index.ts";
 import { buildProbeHandoffSteer, buildSubagentSteer } from "../src/core/contracts/jobs.ts";
 import { dismissedAnswer } from "../src/core/question-core.ts";
 import { buildAnswer, type QuestionData } from "../src/core/question-core.ts";
@@ -337,6 +337,30 @@ describe("send (one input event, verbatim consumption)", () => {
 			JSON.stringify({ code: "models_not_configured", missing: ["strong"] }),
 			"the banner carries the raw envelope — the refusal flow JSON-parses it",
 		);
+	});
+
+	it("a 410 legacySession refusal surfaces the RAW body text (parseLegacyRefusal's contract)", async () => {
+		const body = JSON.stringify(legacySessionRefusal());
+		globalThis.fetch = (async () => new Response(body, { status: 410 })) as typeof globalThis.fetch;
+		const m = model();
+		await m.send({ type: "text", text: "q" });
+		assert.equal(m.getState().status, "error");
+		assert.equal(m.getState().error!.message, body, "the chat view reads code legacySession from it");
+	});
+
+	it("plan-accept (Start) POSTs its input once, with no optimistic append", async () => {
+		const posts: string[] = [];
+		globalThis.fetch = dietFetch({
+			onPost: (b) => posts.push(b),
+			stream: () => sseResponse({ type: "agent_start" }, { type: "agent_end", messages: [] }, "[DONE]"),
+		});
+		const m = model();
+		const pending = m.send({ type: "plan-accept" });
+		assert.equal(m.getState().status, "submitted");
+		assert.equal(m.getState().nativeMessages.length, 0, "the handoff marker is the server's write-ahead, never optimistic");
+		assert.equal(await pending, true);
+		assert.equal(posts.length, 1);
+		assert.deepEqual(JSON.parse(posts[0]!), { chatId: "chat_x", input: { type: "plan-accept" } });
 	});
 
 	it("the optimistic answer result attaches to the pending quiz part at once", async () => {

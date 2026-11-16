@@ -1,6 +1,6 @@
 import { chainsForSelection, formatChainLine } from "@/src/core";
 import { newGraphContextMessage, type GraphContextPick } from "@/src/core";
-import { compactionInFlight, createChat, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
+import { compactionInFlight, createChat, mentorInFlight, isTurnRunning, listChats, readSettingsRecord, stores, titleFromPrompt } from "@/src/server";
 import type { ChatListItem } from "@/src/core";
 
 /** The session picker's list: record-derived summaries (phase, pending
@@ -11,10 +11,14 @@ import type { ChatListItem } from "@/src/core";
  *  (a running spinner per row would double-signal them), so busy means
  *  exactly "a teach turn is in flight". */
 export async function GET() {
-	const chats: ChatListItem[] = listChats().map((c) => ({
+	// coaching (coach-planner design §4.5): the mentor — the learner's
+	// "Coach" — is reviewing an answer. Carried beside ChatListItem's live
+	// flags without widening the plugin-facing ChatListItem type.
+	const chats: Array<ChatListItem & { coaching: boolean }> = listChats().map((c) => ({
 		...c,
 		busy: isTurnRunning(c.id),
 		compacting: compactionInFlight(c.id),
+		coaching: mentorInFlight(c.id),
 	}));
 	return Response.json({ chats });
 }

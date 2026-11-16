@@ -8,7 +8,7 @@ import { useSettingsSaved } from "@/components/settings-signal";
 import { formatTokens } from "@/components/usage-format";
 import { Hint } from "@/components/ui/hint";
 import { timeAgo } from "@/components/sidebar";
-import { resolveSettings } from "@/src/core";
+import { hidesCoverage, resolveSettings, type LessonProgress } from "@/src/core";
 
 /**
  * The extraction-coverage surfaces (extraction-UX redesign, owner-locked
@@ -43,12 +43,15 @@ export interface SessionCoverage {
 }
 
 /** One session's coverage read — null on transport/404 (callers render
- *  nothing rather than a fake zero; the honest-render doctrine). */
+ *  nothing rather than a fake zero; the honest-render doctrine), and null
+ *  for coach-design teach sessions, which run no automatic extraction
+ *  (coach-planner design D12 — hidesCoverage over the payload's progress). */
 async function fetchCoverage(chatId: string): Promise<SessionCoverage | null> {
 	try {
 		const res = await fetch(`/api/chats/${encodeURIComponent(chatId)}`);
 		if (!res.ok) return null;
-		const body = (await res.json()) as { coverage?: SessionCoverage | null };
+		const body = (await res.json()) as { coverage?: SessionCoverage | null; progress?: LessonProgress };
+		if (hidesCoverage(body.progress)) return null;
 		return body.coverage ?? null;
 	} catch {
 		return null;
@@ -163,11 +166,16 @@ export function CoverageMenuBlock({ chatId }: { chatId: string }) {
 		void load();
 	};
 	return (
-		<CoverageMenuBody
-			coverage={coverage}
-			extracting={extracting}
-			onExtract={() => void onExtract()}
-		/>
+		<>
+			{/* The separator rides the block: a hidden block (no coverage,
+			    or a coach-design teach session) leaves no dangling rule. */}
+			<div className="my-0.5 border-t border-border/60" aria-hidden="true" />
+			<CoverageMenuBody
+				coverage={coverage}
+				extracting={extracting}
+				onExtract={() => void onExtract()}
+			/>
+		</>
 	);
 }
 

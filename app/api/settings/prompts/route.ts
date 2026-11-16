@@ -6,7 +6,8 @@
  * its source text, override text (if a file exists), and effective switch
  * state (settings record's agent.prompts map AND file presence).
  *
- *   GET → 200 {prober: SegmentInfo[], teacher: SegmentInfo[], practice: SegmentInfo[]}
+ *   GET → 200 {prober, planner, teacher, practice, build, mentor: SegmentInfo[]}
+ *   (mentor = the learner-facing "Coach": its own fragment only)
  *   SegmentInfo = {path, sourceText, overrideText, enabled, shared}
  *
  * Shared usage is discoverable by path membership in these lists. The
@@ -24,8 +25,10 @@ export async function GET() {
 	const switches = readSettingsRecord()?.agent?.prompts ?? {};
 	return Response.json({
 		prober: effectivePromptSegments("prober", switches),
+		planner: effectivePromptSegments("planner", switches),
 		teacher: effectivePromptSegments("teacher", switches),
 		practice: effectivePromptSegments("practice", switches),
 		build: effectivePromptSegments("build", switches),
+		mentor: effectivePromptSegments("mentor", switches),
 	});
 }

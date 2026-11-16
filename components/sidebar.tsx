@@ -936,7 +936,8 @@ function SessionsSidebar() {
 						>
 							Delete…
 						</button>
-						<div className="my-0.5 border-t border-border/60" aria-hidden="true" />
+						{/* The coverage block brings its own separator, and hides
+						    for coach-design teach sessions (design D12). */}
 						<CoverageMenuBlock chatId={ctxChatId} />
 					</MenuShell>
 				)}

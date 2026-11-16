@@ -92,6 +92,10 @@ const nextConfig: NextConfig = {
 			// the PTY's per-platform prebuilt binary (@lydell/node-pty-<os>-<arch>,
 			// an optional-dep require the tracer cannot see; one per build).
 			"src/agent/prompts/build/*.md",
+			// Coach-planner (2026-11-14): the planner's prompt directory.
+			"src/agent/prompts/planner/*.md",
+			// The mentor's (the learner-facing "Coach") prompt directory.
+			"src/agent/prompts/mentor/*.md",
 			"node_modules/@lydell/node-pty/**/*",
 			"node_modules/@lydell/node-pty-*/**/*",
 			"src/agent/image-processing/*.mjs",

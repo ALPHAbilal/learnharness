@@ -43,11 +43,11 @@ export const researchInputSchema = Type.Object({
 });
 
 export const demoInputSchema = Type.Object({
-	title: Type.String({ description: "Short title for the demo card, e.g. 'Damped harmonic oscillator'." }),
+	title: Type.String({ description: "Short title for the demo card, e.g. 'Hash table: insert and lookup'." }),
 	brief: Type.String({
 		description:
-			"Precise brief for the builder: the concept, the parameters/controls and what each does, the interactions, and the visual style. " +
-			"The builder sees NOTHING else of the lesson — include everything it needs, including necessary formulas and constants.",
+			"The ground truth for the builder, which sees NOTHING else of the lesson: the exact code or data the learner should see " +
+			"(verbatim, with its line breaks), the hidden state to reveal, every control and what it changes, and the one moment the learner should notice.",
 	}),
 });
 
@@ -113,10 +113,10 @@ const RESEARCH_DESCRIPTION =
 	"NEVER use it for things you know cold, internal reasoning, or math.";
 const DEMO_DESCRIPTION =
 	"Dispatch a background sub-agent that BUILDS and headlessly TESTS an interactive teaching instrument — a single-file HTML " +
-	"demo (parameter sweep, simulation, animation, sampling) rendered live in the lesson. Use it when the concept is DYNAMIC: " +
-	"something to sweep, animate, or sample is better experienced than described. " +
+	"page rendered live in the lesson. Use it to make hidden state visible — what changes inside the machine while code runs " +
+	"or a system works — with the learner operating the cause. " +
 	"The call is ASYNC and fire-and-forget — it resolves immediately and your turn continues; the tested demo arrives later " +
-	"as a new message. Write a precise brief: concept, controls, interactions, style.";
+	"as a new message. Write a precise brief: the exact code or data to show, the hidden state to reveal, the controls, and the moment to notice.";
 const VISUAL_DESCRIPTION =
 	"Dispatch a background sub-agent that hand-authors ONE precise SVG figure, renders it, LOOKS at the render, and iterates " +
 	"until correct. Use it for exact spatial pictures auto-layout diagrams can't do: coordinate geometry, number lines, vectors, " +

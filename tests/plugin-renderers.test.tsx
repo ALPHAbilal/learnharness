@@ -190,7 +190,7 @@ describe("native tool renderer dispatch", () => {
 
 	it("reserves only real built-in presentation and keeps those cards/hidden plans authoritative", async () => {
 		const names = reservedToolRendererNames();
-		for (const name of ["read", "research", "quiz", "probe", "problem", "conclude", "plan_init"]) assert.ok(names.includes(name), name);
+		for (const name of ["read", "research", "quiz", "probe", "problem", "conclude", "plan_init", "plan_batch"]) assert.ok(names.includes(name), name);
 		for (const name of ["web_search", "web_fetch", "pdf_info", "pdf_extract", "write_svg"]) assert.ok(!names.includes(name), name);
 		let pluginMounts = 0;
 		const h = await harness({ activate(ctx) {
@@ -198,10 +198,11 @@ describe("native tool renderer dispatch", () => {
 			ctx.registerToolRenderer({ toolName: "read", mount() { pluginMounts++; } });
 		} }, { reserved: false });
 		try {
-			await h.render(<><MessageResponse isAnimating>{"```mermaid\ngraph TD\nA-->B"}</MessageResponse><ToolPartRenderer part={{ type: "tool-read", toolCallId: "read-1", state: "output-available", input: { path: "fixture.txt" }, output: "builtin output" }} /><ToolPartRenderer part={{ type: "tool-plan_init", toolCallId: "plan-1", state: "output-available", output: { ok: true } }} /></>);
+			await h.render(<><MessageResponse isAnimating>{"```mermaid\ngraph TD\nA-->B"}</MessageResponse><ToolPartRenderer part={{ type: "tool-read", toolCallId: "read-1", state: "output-available", input: { path: "fixture.txt" }, output: "builtin output" }} /><ToolPartRenderer part={{ type: "tool-plan_init", toolCallId: "plan-1", state: "output-available", output: { ok: true } }} /><ToolPartRenderer part={{ type: "tool-plan_batch", toolCallId: "plan-2", state: "output-available", output: { ok: true } }} /></>);
 			assert.equal(pluginMounts, 0); assert.ok(document.querySelector('[data-testid="md-mermaid"]'));
 			assert.ok(document.querySelector('[data-testid="tool-call-card"][data-tool="read"]'));
 			assert.equal(document.querySelector('[data-tool="plan_init"]'), null);
+			assert.equal(document.querySelector('[data-tool="plan_batch"]'), null);
 		} finally { await h.close(); }
 	});
 

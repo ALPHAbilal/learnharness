@@ -50,6 +50,8 @@ export * from "./turn-liveness.ts";
 export * from "./turn-runs.ts";
 export * from "./dismissal-park.ts";
 export * from "./compaction.ts";
+export { mentorInFlight, runMentorStep, type MentorRunner, type MentorStepArgs, type MentorStepOutcome } from "./mentor.ts";
+export { lessonProgressOf } from "./lesson-progress.ts";
 export { sideChats, createSideChatService, type SideChatService, type SideChatDeps, type SideStreamEvent } from "./side-chat.ts";
 export { runPiTurn, piTurnResponse, type PiTurnHandle, type PiTurnSpec } from "./pi/ui-stream.ts";
 export * from "./observability.ts";

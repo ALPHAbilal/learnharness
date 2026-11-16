@@ -52,6 +52,7 @@ const QUIZ_INPUT = {
 	explanation: "Mercury is the innermost planet.",
 	type: "check",
 	nodeId: "planet-order",
+	facts: ["f-planet-order"],
 };
 
 const networkFailure: FauxResponseStep = () => { throw new Error("fetch failed"); };
@@ -140,14 +141,15 @@ describe("failed-response Retry (issue #110)", () => {
 		await turn(engine, chat.id, { type: "text", text: "teach me the planets" });
 		await turn(engine, chat.id, { type: "answer", toolCallId: "call-1", answer });
 		const before = chatStore.getChat(chat.id)!.messages;
-		assert.deepEqual(roles(chat.id), ["user", "assistant", "toolResult", "assistant"]);
+		// The answer's coach card (a hidden custom marker) precedes the reply.
+		assert.deepEqual(roles(chat.id), ["user", "assistant", "toolResult", "custom", "assistant"]);
 		assert.ok(endsInFailedTurn(before));
 		assert.equal((await turn(engine, chat.id, { type: "answer", toolCallId: "call-1", answer })).status, 400);
 		assert.equal((await turn(engine, chat.id, { type: "retry" })).status, 200);
 
 		const saved = chatStore.getChat(chat.id)!.messages;
 		assertPreserved(before, saved);
-		assert.deepEqual(roles(chat.id), ["user", "assistant", "toolResult", "assistant", "assistant"]);
+		assert.deepEqual(roles(chat.id), ["user", "assistant", "toolResult", "custom", "assistant", "assistant"]);
 		assert.equal(endsInFailedTurn(saved), false, "a new successful response supersedes the retained failure");
 		const results = saved.filter((m) => m.role === "toolResult" && m.toolCallId === "call-1");
 		assert.equal(results.length, 1, "the learner's answer was not submitted twice");
@@ -155,7 +157,8 @@ describe("failed-response Retry (issue #110)", () => {
 		assert.ok(result.role === "toolResult");
 		assert.deepEqual(result.details, JSON.parse(JSON.stringify(answer)));
 		assert.match(JSON.stringify(saved.at(-1)), /Mercury it is/);
-		assert.deepEqual(contexts.at(-1), ["user", "assistant", "toolResult"]);
+		// The coach card flattens to a user message on the wire.
+		assert.deepEqual(contexts.at(-1), ["user", "assistant", "toolResult", "user"]);
 		assert.match(histories.at(-1)!, /Mercury is the innermost/);
 	});
 

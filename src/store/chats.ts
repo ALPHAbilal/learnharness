@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { PATHS } from "../../config.ts";
 import { emit } from "../core/events.ts";
 import type { ChatStore } from "../core/ports.ts";
-import type { BuildBranch, BuildReturnEntry, ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, ImageSnapshot, PlanTree, SideChatThread, TurnUsage } from "../core/contracts.ts";
+import type { BuildBranch, BuildReturnEntry, ChatRecord, ChatSettings, ChatSummary, ExtractionRunUsage, ImageSnapshot, PlanTree, ProbeFacts, SideChatThread, TurnUsage } from "../core/contracts.ts";
 import { CURRENT_CHAT_VERSION } from "../core/contracts.ts";
 import type { LhMessage } from "../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../core/native-messages.ts";
@@ -230,6 +230,15 @@ function saveTree(id: string, tree: PlanTree): void {
 	writeChat(record);
 }
 
+/** Persist the probe fact list (coach-planner design §4.4). Modelled on
+ *  saveTree: a read-modify-write that does NOT bump updatedAt. */
+function saveProbeFacts(id: string, probeFacts: ProbeFacts): void {
+	const record = getChat(id);
+	if (!record) throw new Error(`Chat not found: ${id}`);
+	record.probeFacts = probeFacts;
+	writeChat(record);
+}
+
 /** Side-question threads (2026-11-02): one synchronous read-modify-write,
  *  so a concurrent turn's saveMessages (which re-reads the record) never
  *  loses a thread and a thread write never loses messages. Null when the
@@ -283,6 +292,7 @@ export const chatStore: ChatStore = {
 	saveMessages,
 	saveImageSnapshot,
 	saveTree,
+	saveProbeFacts,
 	saveSettings,
 	renameChat,
 	deleteChat,

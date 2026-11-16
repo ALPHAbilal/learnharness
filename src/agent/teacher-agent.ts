@@ -8,8 +8,10 @@ import { APP_IDENTITY, piEngineFor, type PiEngine } from "./models.ts";
 import { effectivePromptSegments } from "./prompt-segments.ts";
 import {
 	askUserQuestionTool,
+	createPlannerTools,
 	createProberTools,
 	createTeacherTools,
+	type PlannerToolContext,
 	type ProbeDoneContext,
 	type ProberToolContext,
 	type TeacherToolContext,
@@ -22,9 +24,10 @@ import { makeNarrationGuard, narrationGuardApplies, SEND_TO_USER_DELIVERY_RULE }
 import { createReadTool, readTool } from "./tools/read.ts";
 import { BUILD_TOOL_NAMES, buildTools, type BuildToolContext } from "./tools/build.ts";
 import { quizInputObject, quizInputProblems } from "../core/question-core.ts";
+import { pluginTeachTagProblems } from "../core/question-facts.ts";
 import { QUESTION_TOOLS, TOGGLEABLE_TOOLS, type EnabledTools } from "../core/pending.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
-import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
+import { contextBoundaryForKind, toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
 import type { ChatGPTRequestCycle } from "./chatgpt-request-cycle.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./plugin-question-tools.ts";
@@ -54,14 +57,15 @@ import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./p
  */
 
 /** Which agent's prompt directory to compose. Practice (2026-10-04)
- *  composes ONLY its own directory — see prompt-segments.ts. */
-export type AgentKind = "prober" | "teacher" | "practice" | "build";
+ *  composes ONLY its own directory — see prompt-segments.ts. The planner
+ *  (coach-planner design §4.1) sits between the prober and the teacher. */
+export type AgentKind = "prober" | "planner" | "teacher" | "practice" | "build";
 
 /** Reserve conversation builtins even when role/mechanics/settings gates hide them.
  * New builtin names must join this catalog; actual turn tools are reserved too. */
 export const CONVERSATION_TOOL_NAMES = Object.freeze([
-	...QUESTION_TOOLS, ...TOGGLEABLE_TOOLS, "probe_done", "read", "ls", "find", "grep",
-	"plan_init", "list_sessions", "list_propositions", "problem", "conclude", sendToUserTool.name,
+	...QUESTION_TOOLS, ...TOGGLEABLE_TOOLS, "probe_done", "draw_map", "reflect", "read", "ls", "find", "grep",
+	"plan_init", "plan_batch", "list_sessions", "list_propositions", "problem", "conclude", sendToUserTool.name,
 	...BUILD_TOOL_NAMES,
 ] as const);
 
@@ -101,6 +105,7 @@ export function composeInstructions(kind: AgentKind, switches?: Record<string, b
 // turn's composition; the cache serves only the switches-less path.
 const composedInstructions: Record<AgentKind, string> = {
 	prober: composeInstructions("prober"),
+	planner: composeInstructions("planner"),
 	teacher: composeInstructions("teacher"),
 	practice: composeInstructions("practice"),
 	build: composeInstructions("build"),
@@ -204,12 +209,12 @@ function makeQuestionStopper(kind: AgentKind) {
 	};
 }
 
-function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], nodeExists?: (nodeId: string) => boolean,
+function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], teachTagProblems?: (nodeId: string, facts: readonly string[] | undefined) => string[],
 	practice?: { gate: PracticeGate; graphNodes: PracticeToolContext["graphNodes"] }) {
-	// Practice never reaches the role fallback (the handler ALWAYS injects
-	// the session's conversation engine — practice rides the same
-	// conversation-spec resolution as teaching); the cast keeps AgentKind
-	// ("practice" is not a ModelRole) honest about that.
+	// Practice, build and the planner never reach the role fallback (the
+	// handler ALWAYS injects the session's conversation engine — they ride
+	// the same conversation-spec resolution as teaching); the cast keeps
+	// AgentKind (none of them is a ModelRole) honest about that.
 	const engine = opts.engine ?? piEngineFor(kind as "prober" | "teacher");
 	const stopper = makeQuestionStopper(kind);
 	const narrationGuard = narrationGuardApplies(kind, engine.model, opts.tools !== undefined);
@@ -228,13 +233,14 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 			? [withArgumentHeal(sendToUserTool)]
 			: []),
 	];
-	// Build branches (2026-11-13) take no plugin contributions: plugins
-	// declare prober/teacher/practice surfaces only.
-	const contributions = kind !== "build" && opts.tools === undefined && opts.chatId && opts.pluginContributions
+	// Build branches (2026-11-13) and the planner (coach-planner design
+	// §4.1) take no plugin contributions: plugins declare
+	// prober/teacher/practice surfaces only.
+	const contributions = kind !== "build" && kind !== "planner" && opts.tools === undefined && opts.chatId && opts.pluginContributions
 		? opts.pluginContributions({ chatId: opts.chatId, agent: kind }, [...CONVERSATION_TOOL_NAMES, ...builtinTools.map(tool => tool.name)])
 		: undefined;
 	const questionLedger = contributions?.questionTypes?.length && opts.chatId
-		? new PluginQuestionLedger(contributions.questionTypes, opts.chatId, nodeExists) : undefined;
+		? new PluginQuestionLedger(contributions.questionTypes, opts.chatId, teachTagProblems) : undefined;
 	const problemTools = kind === "practice" && practice && opts.chatId
 		? pluginProblemTools(contributions?.problemTypes ?? [], opts.chatId, practice.gate, practice.graphNodes) : [];
 	// Never replace the builtin prompt or tools, or mutate an already-running Agent.
@@ -246,6 +252,10 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// the normal no-observer path (tests, env-off).
 	const providerEvents = opts.chatId ? providerEventObserver(opts.chatId, kind) : undefined;
 	const seenInputs = new Set((opts.messages ?? []).map((m) => (m as { id?: string }).id).filter(Boolean));
+	// The fresh context (coach-planner design §4.6/§4.7): the teacher reads
+	// from the latest node-handoff, the planner from a planner-wake that is
+	// the latest boundary; every other kind reads the full record.
+	const boundary = contextBoundaryForKind(kind);
 	const agent = new Agent({
 		identity: APP_IDENTITY,
 		sessionId: opts.chatId,
@@ -288,8 +298,9 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 		// (HANDOFF_TEXT / steer text, all single-sourced),
 		// UI-only markers (plan-block) drop, the app's id fields strip, and
 		// an abort's dangling question call gets its INTERRUPTED result. It
-		// must never throw (pi's convertToLlm contract).
-		convertToLlm: toLlmMessages,
+		// must never throw (pi's convertToLlm contract). The teacher and the
+		// planner render from their fresh-context boundary (above).
+		convertToLlm: boundary ? (messages: AgentMessage[]) => toLlmMessages(messages, { boundary }) : toLlmMessages,
 		...(opts.contextUpdates ? { prepareNextTurnWithContext: ({ context }: { context: { messages: AgentMessage[] } }) => {
 			const messages = opts.contextUpdates!(context.messages);
 			return messages.length ? { messages } : undefined;
@@ -345,10 +356,22 @@ export function createProberAgent(ctx: ProberToolContext, opts: AgentBuildOption
 }
 
 /**
- * The TEACHER (agent B): enters at planning (the probe is already
- * concluded — its assessment is in the transcript), owns plan_init and the
- * full toolset (teach questions with validated nodeId, the map, research,
- * demos).
+ * The PLANNER (coach-planner design §4.1): built once the probe is
+ * concluded and until the learner accepts the plan (and again after a
+ * planner-wake). Its registry is plan_batch + the read-only learner-file
+ * set + research; no question tools and no plugin contributions. The
+ * handler always injects the session's conversation engine.
+ */
+export function createPlannerAgent(ctx: PlannerToolContext, opts: AgentBuildOptions = {}) {
+	if (opts.tools !== undefined) return baseAgentOptions("planner", opts, Object.values(opts.tools));
+	return baseAgentOptions("planner", opts, Object.values(createPlannerTools(ctx, opts.toolToggles)));
+}
+
+/**
+ * The TEACHER (agent B): enters once the learner accepts the plan (a
+ * node-handoff marker in the record) and owns the teaching toolset (teach
+ * questions with validated nodeId, research, demos). The plan itself is
+ * the planner's.
  */
 export function createTeacherAgent(
 	// Optional so tests can construct a bare mock-driven agent (no storage
@@ -359,7 +382,7 @@ export function createTeacherAgent(
 ) {
 	const tools = opts.tools ?? (ctx ? createTeacherTools(ctx, opts.toolToggles) : bareQuestionTools());
 	return baseAgentOptions("teacher", opts, Object.values(tools), ctx
-		? nodeId => ctx.chatStore.getChat(ctx.chatId)?.tree?.nodes.some(node => node.id === nodeId) ?? false
+		? (nodeId, facts) => pluginTeachTagProblems(ctx.chatStore.getChat(ctx.chatId), nodeId, facts)
 		: undefined);
 }
 
@@ -424,8 +447,9 @@ export function createBuildAgent(ctx: BuildToolContext, opts: AgentBuildOptions 
 }
 
 export type ProberAgent = ReturnType<typeof createProberAgent>;
+export type PlannerAgent = ReturnType<typeof createPlannerAgent>;
 export type TeacherAgent = ReturnType<typeof createTeacherAgent>;
 export type PracticeAgent = ReturnType<typeof createPracticeAgent>;
 export type BuildAgent = ReturnType<typeof createBuildAgent>;
-export type TeachingAgent = ProberAgent | TeacherAgent | PracticeAgent | BuildAgent;
+export type TeachingAgent = ProberAgent | PlannerAgent | TeacherAgent | PracticeAgent | BuildAgent;
 

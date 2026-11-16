@@ -1,23 +1,27 @@
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { invalidInputResult, questionResult, serverExecute } from "./tool-execute.ts";
 import {
 	askInputSchema,
 	askOptionProblems,
-	explainInputBase,
 	explainInputObject,
 	explainInputProblems,
 	parseOptionsIfString,
+	probeExplainInputSchema,
 	probeQuizInputSchema,
 	quizInputObject,
 	quizInputProblems,
+	withNormalizedFactTags,
+	withProbeAnswerKey,
 } from "../core/question-core.ts";
+import { proberAskProblems, probeFactProblems, teachFactProblems } from "../core/question-facts.ts";
 import { filterEnabledTools, type EnabledTools } from "../core/pending.ts";
 import type { JobRecord } from "../core/contracts.ts";
 import type { JobStore } from "../core/ports.ts";
 import { jobTools, type DemoInput, type PdfInput, type ResearchInput, type VisualInput } from "./tools/jobs.ts";
-import { planTools, type PlanToolContext } from "./tools/plan.ts";
+import { planBatchTool, type PlanToolContext } from "./tools/plan.ts";
 import { probeDoneTool, type ProbeDoneContext } from "./tools/probe.ts";
+import { drawMapTool, reflectTool } from "./tools/probe-map.ts";
 import { proberGraphTools } from "./tools/graph.ts";
 import { readTool } from "./tools/read.ts";
 import { lsTool } from "./tools/ls.ts";
@@ -51,10 +55,12 @@ export type { ProbeDoneContext } from "./tools/probe.ts";
  *   parallel calls resolve in the model's call order (the dock's subject
  *   can never flip mid-turn).
  * - probe_done (src/agent/tools/probe.ts): SERVER-SIDE seam tool.
- * - planTools (src/agent/tools/plan.ts): SERVER-SIDE — author-once
- *   plan_init. Teacher only.
- * - jobTools (src/agent/tools/jobs.ts): SERVER-EXECUTED dispatch. Teacher
- *   only.
+ * - draw_map / reflect (src/agent/tools/probe-map.ts): SERVER-SIDE — the
+ *   prober's map tools (the prober owns the map). Prober only.
+ * - plan_batch (src/agent/tools/plan.ts): SERVER-SIDE — the planner's
+ *   plan tool (coach-planner design §4.2). Planner only; plan_init left
+ *   every registry with the coach update (its name stays reserved).
+ * - jobTools (src/agent/tools/jobs.ts): SERVER-EXECUTED dispatch.
  */
 
 /** GLM wobble guard (owner-approved, 2026-09-26): models sometimes emit
@@ -67,7 +73,10 @@ export type { ProbeDoneContext } from "./tools/probe.ts";
  *  honestly and the agent retries with a real error to learn from. */
 function prepareQuestionArguments<T extends object>(args: unknown): T {
 	if (args && typeof args === "object" && !Array.isArray(args)) {
-		const o = args as { options?: unknown };
+		// The fact-tag guard (coach-planner design §4.4): a bare-string
+		// `facts` wraps into a one-item array, a JSON-encoded array parses.
+		// The generic heal never reaches nested values, so it lives here.
+		const o = withNormalizedFactTags(args as { options?: unknown; facts?: unknown });
 		if (typeof o.options === "string") {
 			const parsed = parseOptionsIfString(o.options);
 			if (parsed !== o.options) return { ...o, options: parsed } as T;
@@ -137,6 +146,20 @@ export const quizExampleBody = {
 	correctAnswer: "a",
 };
 
+/** The teach example call: the required pair, then the fact tags, then the
+ *  canonical body (exported for the description pins). */
+export const teachQuizExample = { type: "check" as const, nodeId: "chain-rule", facts: ["f-chain-rule"], ...quizExampleBody };
+/** The probe example call: the canonical body with fact tags after the
+ *  leading required fields, exactly the probe schema's order — and no
+ *  correctAnswer: the probe's answer key is its first option
+ *  (withProbeAnswerKey; the canonical body's first option is the right one). */
+export const probeQuizExample = {
+	question: quizExampleBody.question,
+	options: quizExampleBody.options,
+	facts: ["f-chain-rule"],
+	explanation: quizExampleBody.explanation,
+};
+
 /** The quiz mechanics every variant shares; `delta` appends the variant's
  *  own fields (its NAME among them — the probe-phase tools self-reference
  *  as probe/recall, owner 2026-10-09). All mechanics, zero doctrine — plus
@@ -156,21 +179,26 @@ function quizDescription(delta: { name: "quiz" | "probe"; nodeId: boolean; types
 			? "Every call declares `type` — the question's role in the teaching cycle; the field's own description says when each kind fires. "
 			: "") +
 		(delta.nodeId
-			? "Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. For off-map checks use ask_user_question. "
-			: "") +
+			? "Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. For off-map checks use ask_user_question. " +
+				"Set `facts` (required) to the id(s) of the fact(s) of that node this question tests — validated at call time. "
+			: "Set `facts` to the id of the ONE fact on the probe map this question tests (a fact that is not placed) — validated at call time. " +
+				"Write the correct option FIRST. The app shuffles the options before the learner sees them, so the position gives nothing away. " +
+				"Do not send correctAnswer for a single-answer question. ") +
 		"ONE question per turn: call a single " +
 		delta.name +
 		", then end your turn — his answer determines the next.";
 	// Phase-correct shape: the teach example LEADS with the required pair
 	// (type, nodeId — the 2026-10-09 drop-order ruling); the probe example
 	// carries no phase metadata at all, exactly like the probe schema.
-	const example = delta.nodeId ? { type: "check" as const, nodeId: "chain-rule", ...quizExampleBody } : quizExampleBody;
+	const example = delta.nodeId ? teachQuizExample : probeQuizExample;
 	return (
 		base +
 		"\nExample arguments — copy the escaping exactly: inside JSON strings a LaTeX backslash is \\\\ and a newline is \\n.\n```json\n" +
 		JSON.stringify(example, null, 2) +
 		"\n```" +
-		(delta.nodeId ? " The example's nodeId is illustrative — copy an exact id from this session's plan_init." : "")
+		(delta.nodeId
+			? " The example's nodeId and facts are illustrative — copy an exact node id from this session's plan, and the fact ids exactly from the node handoff or the latest coach card."
+			: " The example's facts are illustrative — copy the fact id exactly from the map in your latest draw_map or reflect result.")
 	);
 }
 
@@ -189,8 +217,9 @@ function explainDescription(name: "explain" | "recall", nodeId: boolean): string
 		"sees the question. When his answer returns, grade it strictly against the commitment — never revise it " +
 		"after seeing his words. He sees the committed answer on submit. " +
 		(nodeId
-			? "Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. "
-			: "") +
+			? "Set `nodeId` (required) to the plan node this question is about — validated at call time against the session's plan map. " +
+				"Set `facts` (required) to the id(s) of the fact(s) of that node this question tests — validated at call time. "
+			: "Set `facts` to the id of the ONE fact on the probe map this question tests (a fact that is not placed; copy it from your latest draw_map or reflect result) — validated at call time. ") +
 		"ONE question per turn: call a single " + name + ", then end your turn — his answer determines the next."
 	);
 }
@@ -203,19 +232,49 @@ function explainDescription(name: "explain" | "recall", nodeId: boolean): string
  *  that habit (the tools_fails_2 incident). Distinct names make the
  *  phase boundary visible in the transcript itself: history written by
  *  `probe` never lies about what `quiz` requires. */
-export const probeQuizTool: AgentTool<typeof probeQuizInputSchema> = {
-	name: "probe",
-	label: "probe",
-	description: quizDescription({ name: "probe", nodeId: false, types: false }),
-	parameters: probeQuizInputSchema,
-	prepareArguments: prepareQuestionArguments,
-	executionMode: "sequential",
-	execute: async (_toolCallId, input) => {
-		const problems = quizInputProblems(input);
-		if (problems.length > 0) return invalidInputResult("probe", problems);
-		return questionResult();
-	},
-};
+export function probeQuizToolFor(ctx?: Pick<ProbeDoneContext, "chatId" | "chatStore" | "probeGraph">): AgentTool<typeof probeQuizInputSchema> {
+	return {
+		name: "probe",
+		label: "probe",
+		description: quizDescription({ name: "probe", nodeId: false, types: false }),
+		parameters: probeQuizInputSchema,
+		// The probe's answer key (question-core withProbeAnswerKey): after the
+		// shared heal, a single-answer question's correctAnswer is set to its
+		// first option's value, whatever the model sent.
+		prepareArguments: (args: unknown) => withProbeAnswerKey(prepareQuestionArguments<Static<typeof probeQuizInputSchema>>(args)),
+		executionMode: "sequential",
+		execute: async (_toolCallId, input) => {
+			const problems = [...quizInputProblems(input), ...probeTagProblems(ctx, input.facts)];
+			if (problems.length > 0) return invalidInputResult("probe", problems);
+			return questionResult();
+		},
+	};
+}
+
+/** The context-free probe quiz (tests, bare registries): no probe fact
+ *  list to read, so `facts` is never checked. */
+export const probeQuizTool: AgentTool<typeof probeQuizInputSchema> = probeQuizToolFor();
+
+/** The probe gate on a question (the prober owns the map): reads the LIVE
+ *  record — its probe map and marks — and the evidence ledger
+ *  (question-facts.ts probeGateOf); no context = no check. */
+function probeTagProblems(ctx: Pick<ProbeDoneContext, "chatId" | "chatStore" | "probeGraph"> | undefined, facts: readonly string[] | undefined): string[] {
+	if (!ctx) return [];
+	return probeFactProblems(ctx.chatStore.getChat(ctx.chatId), facts, ctx.probeGraph?.readEvidence() ?? [], ctx.chatId);
+}
+
+/** The prober's ask_user_question: the shared tool plus the probe's rule
+ *  of ONE opening question (question-facts.ts proberAskProblems). */
+export function proberAskToolFor(ctx: Pick<ProbeDoneContext, "chatId" | "chatStore">): AgentTool<typeof askInputSchema> {
+	return {
+		...askUserQuestionTool,
+		execute: async (_toolCallId, input) => {
+			const problems = [...askOptionProblems(input.options ?? []), ...proberAskProblems(ctx.chatStore?.getChat(ctx.chatId))];
+			if (problems.length > 0) return invalidInputResult("ask_user_question", problems);
+			return questionResult();
+		},
+	};
+}
 
 /** The teacher's free-recall variant (nodeId-validated, same seam as the
  *  teach quiz — phases/plan recognize BOTH tool names). */
@@ -230,9 +289,7 @@ export function teachExplainToolFor(
 		prepareArguments: prepareQuestionArguments,
 		executionMode: "sequential",
 		execute: async (_toolCallId, input) => {
-			const problems = [...explainInputProblems(input)];
-			const nodeIdProblemText = nodeIdProblem(ctx, input.nodeId);
-			if (nodeIdProblemText) problems.push(nodeIdProblemText);
+			const problems = [...explainInputProblems(input), ...teachTagProblems(ctx, input.nodeId, input.facts)];
 			if (problems.length > 0) return invalidInputResult("explain", problems);
 			return questionResult();
 		},
@@ -247,19 +304,24 @@ export function teachExplainToolFor(
  *  probe call shape into teaching. Old probe-phase records keep the
  *  `explain` name and parse identically (the display seam accepts
  *  both). */
-export const probeExplainTool: AgentTool<typeof explainInputBase> = {
-	name: "recall",
-	label: "recall",
-	description: explainDescription("recall", false),
-	parameters: explainInputBase,
-	prepareArguments: prepareQuestionArguments,
-	executionMode: "sequential",
-	execute: async (_toolCallId, input) => {
-		const problems = explainInputProblems(input);
-		if (problems.length > 0) return invalidInputResult("recall", problems);
-		return questionResult();
-	},
-};
+export function probeExplainToolFor(ctx?: Pick<ProbeDoneContext, "chatId" | "chatStore" | "probeGraph">): AgentTool<typeof probeExplainInputSchema> {
+	return {
+		name: "recall",
+		label: "recall",
+		description: explainDescription("recall", false),
+		parameters: probeExplainInputSchema,
+		prepareArguments: prepareQuestionArguments,
+		executionMode: "sequential",
+		execute: async (_toolCallId, input) => {
+			const problems = [...explainInputProblems(input), ...probeTagProblems(ctx, input.facts)];
+			if (problems.length > 0) return invalidInputResult("recall", problems);
+			return questionResult();
+		},
+	};
+}
+
+/** The context-free recall (tests, bare registries): `facts` unchecked. */
+export const probeExplainTool: AgentTool<typeof probeExplainInputSchema> = probeExplainToolFor();
 
 /** The prober's registry context: the probe's own needs (probe_done —
  *  ProbeDoneContext) PLUS the job-dispatch wiring, since the owner ruling
@@ -291,7 +353,9 @@ export function createProberTools(
 ): Record<string, AgentTool<any>> {
 	// probe_done is re-added AFTER the filter, always-on by construction — it
 	// is how the phase ENDS; a prober that can never conclude is a lockout.
-	const done = probeDoneTool(ctx);
+	// The map tools (draw_map / reflect) ride with it: the probe's gate
+	// requires them, so they are never droppable either.
+	const done = { ...probeDoneTool(ctx), draw_map: drawMapTool(ctx), reflect: reflectTool(ctx) };
 	// The job tools build over the SAME context/gates as the teacher's
 	// (one builder, one gating semantic); the prober carries a SUBSET:
 	const jobs = jobTools({
@@ -311,7 +375,7 @@ export function createProberTools(
 	// differently-typed literals makes the whole object's type a union —
 	// unusable as Record<string, AgentTool<any>> downstream).
 	const quizzing: Record<string, AgentTool<any>> =
-		mechanics === "free" ? { recall: probeExplainTool } : { probe: probeQuizTool };
+		mechanics === "free" ? { recall: probeExplainToolFor(ctx) } : { probe: probeQuizToolFor(ctx) };
 	// healToolRecord (owner, 2026-10-09 — the whitehead generalization):
 	// the standard argument heal over the WHOLE registry — every tool,
 	// not just the one the latest wobble incident landed on.
@@ -319,7 +383,7 @@ export function createProberTools(
 		...filterEnabledTools(
 			{
 				...quizzing,
-				ask_user_question: askUserQuestionTool,
+				ask_user_question: proberAskToolFor(ctx),
 				// The learner-filesystem set is always-on (user-decided 2026-09,
 				// sources v1): the prober inspects and LOCATES learner-referenced
 				// files while assessing the edge. Read-only by construction.
@@ -359,11 +423,23 @@ function nodeIdProblem(ctx: Pick<PlanToolContext, "chatId" | "chatStore">, nodeI
 		return (
 			`nodeId "${nodeId}" matches no node in this session's plan map. ` +
 			(known.length > 0
-				? `Copy one of your plan_init slugs exactly (${known.slice(0, 5).join(", ")}${known.length > 5 ? ", …" : ""}).`
-				: "No plan map exists yet — call plan_init before posing quizzes.")
+				? `Copy one of the plan's node ids exactly (${known.slice(0, 5).join(", ")}${known.length > 5 ? ", …" : ""}).`
+				: "No plan map exists yet — quizzes wait for the plan.")
 		);
 	}
 	return null;
+}
+
+/** The teacher's tag check (coach-planner design §4.4): once a node-handoff
+ *  exists, `nodeId` must be the CURRENT node and every `facts` id a fact of
+ *  it (question-facts.ts teachFactProblems); before any handoff, today's
+ *  plain node-existence check (nodeIdProblem). Reads the LIVE record. */
+function teachTagProblems(ctx: Pick<PlanToolContext, "chatId" | "chatStore">, nodeId: string, facts: readonly string[]): string[] {
+	const record = ctx.chatStore.getChat(ctx.chatId);
+	const tagged = record ? teachFactProblems(record, nodeId, facts, { factsRequired: true }) : null;
+	if (tagged && tagged.length > 0) return tagged;
+	const existence = nodeIdProblem(ctx, nodeId);
+	return existence ? [existence] : [];
 }
 
 /** Build the teach-side quiz tool for one request (exported for tests): the authoring contract
@@ -382,9 +458,7 @@ export function teachQuizToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStor
 		prepareArguments: prepareQuestionArguments,
 		executionMode: "sequential",
 		execute: async (_toolCallId, input) => {
-			const problems = [...quizInputProblems(input)];
-			const nodeIdProblemText = nodeIdProblem(ctx, input.nodeId);
-			if (nodeIdProblemText) problems.push(nodeIdProblemText);
+			const problems = [...quizInputProblems(input), ...teachTagProblems(ctx, input.nodeId, input.facts)];
 			if (problems.length > 0) return invalidInputResult("quiz", problems);
 			return questionResult();
 		},
@@ -405,7 +479,8 @@ export interface TeacherToolContext extends PlanToolContext {
 
 /**
  * Per-request teacher tool registry: teach questions (validated nodeId) +
- * plan tools + job tools, all closing over the ctx.
+ * job tools, all closing over the ctx. The plan is the planner's
+ * (createPlannerTools); the teacher only reads it through nodeId checks.
  *
  * `enabled` is the resolved settings seam (core/pending.ts EnabledTools —
  * Platform's chat-handler wiring passes it through from settings). Today
@@ -461,10 +536,52 @@ export function createTeacherTools(
 			// The learner-image display twin of read (issue #363): teacher
 			// only, always on — it shows the learner their own file.
 			show_image: createShowImageTool(ctx),
-			...planTools(ctx),
 			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
 		},
 		withoutMechanics(enabled),
 		),
 	);
+}
+
+// ─── the planner (coach-planner design §4.1) ─────────────────────────────────
+
+/** The planner's registry context: the plan tree + the knowledge graph its
+ *  facts are written to (plan_batch), plus the job wiring for `research`. */
+export interface PlannerToolContext extends PlanToolContext {
+	/** The knowledge graph plan_batch writes facts and arrows to — passed
+	 *  regardless of the graph settings switch (see tools/plan.ts). */
+	graphStore: GraphStore;
+	/** Creates the job record (deduped by toolCallId). */
+	jobStore: JobStore;
+	/** Fire the background runner for a freshly created job. */
+	spawn: (job: JobRecord, input: ResearchInput | DemoInput | VisualInput | PdfInput) => void;
+	/** Retained search-status seam; research dispatch is available keylessly. */
+	searchAvailable?: () => boolean;
+}
+
+/** The planner's tool set: plan_batch, the read-only learner-file set, and
+ *  `research` (under the same user toggle as everywhere). No question
+ *  tools — the planner presents its plan in prose and the learner answers
+ *  with Start or a typed change request. plan_batch is always on: a
+ *  planner that cannot plan is a lockout. */
+export function createPlannerTools(
+	ctx: PlannerToolContext,
+	enabled?: EnabledTools,
+): Record<string, AgentTool<any>> {
+	const jobs = jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable });
+	const plan: Record<string, AgentTool<any>> = { plan_batch: planBatchTool(ctx) };
+	return healToolRecord({
+		...filterEnabledTools(
+			{
+				...plan,
+				read: readTool,
+				ls: lsTool,
+				find: findTool,
+				grep: grepTool,
+				...(jobs.research ? { research: jobs.research } : {}),
+			},
+			withoutMechanics(enabled),
+		),
+		...plan,
+	});
 }

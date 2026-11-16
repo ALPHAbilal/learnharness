@@ -112,6 +112,21 @@ test("a successful plan_init turn gains ONE full block (all nodes, statuses from
 	assert.equal(data.edges.length, 4);
 });
 
+test("a successful plan_batch turn (the planner, coach update) gains ONE full block, spliced after the call", () => {
+	const turn = [
+		assistantWithCall("m1", "plan_batch", { nodes: [] }, "Here is the first stretch."),
+		resultOf("m1", "plan_batch", { ok: true, tree: TREE }),
+	];
+	const out = projectAfter([], turn, TREE);
+	const blocks = blocksOf(out);
+	assert.equal(blocks.length, 1);
+	assert.equal(blocks[0]!.nodes.length, 5);
+	const parts = out.at(-1)!.parts.map((p) => p.type);
+	assert.equal(parts[parts.indexOf("tool-plan_batch") + 1], "data-plan-block", "the block sits right after the plan_batch part");
+	// A failed or refused plan_batch presents nothing.
+	assert.equal(blocksOf(projectAfter([], [assistantWithCall("m2", "plan_batch", {}), resultOf("m2", "plan_batch", { ok: false, error: "bad" })], TREE)).length, 0);
+});
+
 test("a FAILED plan_init gains nothing", () => {
 	const turn = [
 		assistantWithCall("m1", "plan_init", { tree: TREE }, "oops"),

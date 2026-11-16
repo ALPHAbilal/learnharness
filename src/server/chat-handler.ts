@@ -1,6 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 import {
 	createBuildAgent,
+	createPlannerAgent,
 	createPracticeAgent,
 	createProberAgent,
 	createTeacherAgent,
@@ -42,7 +43,6 @@ import { preparePluginProblemSubmission, requirePluginProblemTarget, type Proble
 import { providerKeyPresent } from "./keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import {
-	extractionEnabled,
 	graphToolsEnabled,
 	resolveConversationSpec,
 	resolveRoleSpec,
@@ -55,8 +55,16 @@ import { sideConversationEntries } from "../core/side-chat.ts";
 import { sideChats, type SideChatService } from "./side-chat.ts";
 import { SIDE_CONTEXT_BUDGET_ERROR, sideBudgetRetryDrops, sideContextWindow } from "./side-context-budget.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
-import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
-import { hasProbeDone, hasUnresolvedQuestion, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf } from "../core/native-messages.ts";
+import { persistTurn, TurnPersistenceError } from "./turn-service.ts";
+import { agentKindFor, hasProbeDone, hasUnresolvedQuestion, isLegacyTeachRecord, pendingPluginQuestionOf, pluginQuestionCallsOf, questionCallsOf, type TeachingAgentKind } from "../core/native-messages.ts";
+import { knowledgeOf } from "../core/knowledge.ts";
+import { answeredQuestionsIn, evidenceForAnswer, factResolver, unstampedEvidence, type AnsweredQuestion } from "../core/evidence.ts";
+import { advanceAppends } from "../core/plan-progress.ts";
+import { latestLearnerAnswer } from "../core/mentor-input.ts";
+import { insertedNodeHandoff } from "../core/mentor-apply.ts";
+import { mentorInstructions, runMentor } from "../agent/subagents/mentor.ts";
+import { runMentorStep, type MentorRunner } from "./mentor.ts";
+import type { LhMarkerMessage } from "../core/native-messages.ts";
 import { samePluginQuestionOccurrence } from "../core/plugin-questions.ts";
 import { composeInstructions } from "../agent/teacher-agent.ts";
 import { buildActivityCargo, buildReturnCargo, commitBuildCargo, type BuildTurnCargo } from "./build-turn.ts";
@@ -79,7 +87,7 @@ import {
 	retryDrops,
 	type TurnInput,
 } from "../core/input-events.ts";
-import { steerDelivered } from "../core/contracts.ts";
+import { legacySessionRefusal, steerDelivered } from "../core/contracts.ts";
 import type {CallUsage} from "../core/contracts.ts";
 
 /**
@@ -184,10 +192,106 @@ setJobRespawn((jobId) => void jobRunner.runJob(jobId));
 // tools read it fresh per call (allowed folders + the app's private paths).
 setFileAccessPolicy(fileAccessPolicy);
 
+/** The mentor review the after-answer step runs (the answer's turn
+ *  proceeds and the answer qualifies — see handleChatInput). */
+interface AfterAnswerMentor {
+	phase: "teach";
+	latest: AnsweredQuestion;
+	engine: PiEngine;
+	modelId: string;
+	systemPrompt: string;
+	signal: AbortSignal;
+	/** null = no model call (a null review: tests without an injection). */
+	run: MentorRunner | null;
+}
+
+/**
+ * THE AFTER-ANSWER STEP (coach-planner design §4.3/§4.5/§4.7): runs once a
+ * learner answer (a builtin question's or a plugin question's result) is
+ * SAVED, so the answer is durable before anything here happens.
+ *
+ *   1. Stamp evidence: every answer result in `answerAppends` becomes
+ *      evidence-ledger events (core/evidence.ts — the server re-derives
+ *      multiple-choice correctness; coding questions read their test
+ *      outcome). Idempotent: an event whose (chatId, messageId, nodeId)
+ *      the ledger already holds is skipped (re-posts after a 409 or a
+ *      reconnect). Written regardless of the graph.enabled setting: the
+ *      evidence is learner state, not extraction.
+ *   2. The mentor (with `mentor` — the learner's "Coach", server/mentor.ts;
+ *      teaching only — a probe answer passes advance: false, so it only
+ *      stamps evidence): one awaited review, applied (graph facts, the
+ *      tree, own-words verdicts), then its markers: a plan-update when the
+ *      tree changed and the coach-card (always, the app's numbers).
+ *   3. Advance (only when `advance` is true — the turn proceeds): when the
+ *      review inserted nodes before the current node, the node-handoff to
+ *      the first of them; otherwise the app-side rule (plan-progress
+ *      advanceAppends) returns the node-handoff or planner-wake marker.
+ *
+ * Every returned marker lands after the answer's tool result. `before` is
+ * the record the answer appended to; `saved` the full saved message list
+ * (the answer included). Failures are logged, never thrown: the answer is
+ * already saved and the turn must still run. `aborted` = the mentor's
+ * preparation was aborted (nothing is returned to append).
+ */
+async function afterAnswer(args: {
+	chatId: string;
+	before: readonly LhMessage[];
+	answerAppends: readonly LhMessage[];
+	saved: readonly LhMessage[];
+	advance: boolean;
+	mentor?: AfterAnswerMentor;
+}): Promise<{ markers: LhMarkerMessage[]; aborted: boolean }> {
+	const { chatId, before, answerAppends, saved, advance, mentor } = args;
+	const none = { markers: [], aborted: false };
+	const record = stores.chatStore.getChat(chatId);
+	if (!record) return none;
+	let ledger: ReturnType<typeof stores.graphStore.readEvidence>;
+	try {
+		ledger = stores.graphStore.readEvidence();
+		const resolve = factResolver(record);
+		const at = new Date().toISOString();
+		const events = answeredQuestionsIn(before, answerAppends).flatMap((answered) => evidenceForAnswer({ chatId, at, resolve, ...answered }));
+		const fresh = unstampedEvidence(ledger, events);
+		for (const event of fresh) stores.graphStore.appendEvidence(event);
+		ledger = [...ledger, ...fresh];
+	} catch (err) {
+		console.error(`[chat ${chatId}] evidence stamping failed:`, err);
+		return none;
+	}
+	if (!advance) return none;
+	let markers: LhMarkerMessage[] = [];
+	let tree = record.tree;
+	let notes: string[] = [];
+	let handoff: LhMarkerMessage | null = null;
+	if (mentor) {
+		const outcome = await runMentorStep({ chatId, ...mentor, saved, events: ledger, stores });
+		if (outcome.aborted) return { markers: [], aborted: true };
+		markers = outcome.markers;
+		tree = outcome.tree;
+		ledger = outcome.events;
+		notes = outcome.notes;
+		if (outcome.insertedNodeIds.length > 0 && tree && outcome.currentNodeId) {
+			try {
+				const card = markers.at(-1);
+				handoff = insertedNodeHandoff({ tree, events: ledger, currentNodeId: outcome.currentNodeId, lastCard: card?.content ?? null });
+			} catch (err) {
+				console.error(`[chat ${chatId}] coach node handoff failed:`, err);
+			}
+		}
+	}
+	if (handoff) return { markers: [...markers, handoff], aborted: false };
+	try {
+		return { markers: [...markers, ...advanceAppends({ messages: [...saved, ...markers], tree, events: ledger, notes })], aborted: false };
+	} catch (err) {
+		console.error(`[chat ${chatId}] plan advance failed:`, err);
+		return { markers, aborted: false };
+	}
+}
+
 /** The route-facing entry: parse {chatId, input} and run one turn. */
 export async function handleChatRequest(
 	req: Request,
-	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
+	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean; kind: TeachingAgentKind }) => TeachingAgent,
 	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
 ): Promise<Response> {
 	let body: { chatId?: unknown; input?: unknown };
@@ -218,9 +322,25 @@ export async function handleChatRequest(
 export async function handleChatInput(
 	chatId: string,
 	input: TurnInput,
-	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
+	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean; kind: TeachingAgentKind }) => TeachingAgent,
 	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
+	/** The test seam for the mentor (the learner's "Coach"): an injected
+	 *  runner replaces the model call. Without one, production runs
+	 *  runMentor and NODE_ENV=test makes no call (a null review — cards and
+	 *  the advance still happen), as compaction is skipped in tests unless a
+	 *  summarizer is injected. */
+	options: { mentor?: MentorRunner } = {},
 ): Promise<Response> {
+	// LEGACY TEACH SESSIONS (coach-planner design O4): a teach record made
+	// before the coach update (it holds a plan_init call) stays readable but
+	// takes no further turn. Refused first — before any reconciliation,
+	// write-ahead save, or liveness effect.
+	const existingRecord = stores.chatStore.getChat(chatId);
+	if (existingRecord && (existingRecord.kind ?? "teach") === "teach" && isLegacyTeachRecord(existingRecord.messages)) {
+		const envelope = legacySessionRefusal();
+		console.info(`[chat ${chatId}] turn refused — ${JSON.stringify(envelope)}`);
+		return Response.json(envelope, { status: 410 });
+	}
 	await reconcilePluginQuestionCompatibility(stores.chatStore, chatId);
 	const initialRecord = stores.chatStore.getChat(chatId);
 	if (!initialRecord) {
@@ -339,9 +459,13 @@ export async function handleChatInput(
 	};
 	let conversationEngine: PiEngine;
 	let compactionEngine: PiEngine;
+	let mentorEngine: PiEngine;
 	try {
 		conversationEngine = piEngineForSpec(conversation, () => callPurpose.background, lifecycle, retentionForSlot("strong"));
 		compactionEngine = piEngineForSpec(conversation, true, undefined, retentionForSlot("strong"));
+		// The mentor rides the learner's foreground answer: the session's own
+		// model, never the background-consent gate.
+		mentorEngine = piEngineForSpec(conversation, false, undefined, retentionForSlot("strong"));
 	}
 	catch { return Response.json({ error: conversation.provider === "chatgpt" ? chatGPTStreamError("model catalog") : isSubscriptionProvider(conversation.provider) ? nativeSubscriptionError(conversation.provider, "model catalog") : "The selected model is unavailable." }, { status: 503 }); }
 	const capturedPolicy = submissionImagePolicyKey(conversationEngine);
@@ -368,7 +492,14 @@ export async function handleChatInput(
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
 	const contextWindow = catalogContextLimits().get(modelIdForCompaction);
 	const thresholdTokens = effectiveThresholdTokens(effective.compaction?.thresholdTokens, contextWindow);
-	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : record.kind === "build" ? "build" : "teacher").length / 4);
+	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : record.kind === "build" ? "build" : agentKindFor(record.messages)).length / 4);
+	// plan-accept reads the evidence ledger (the node to teach, its handoff
+	// numbers and the road record); every other input appends without it.
+	const appendDeps = () => {
+		if (input.type !== "plan-accept") return {};
+		const events = stores.graphStore.readEvidence();
+		return { knowledge: knowledgeOf(events), events };
+	};
 	const estimateModel = effective.compaction.includeReasoning ? conversationEngine.model : undefined;
 	const fitsSideContext = (messages: readonly LhMessage[]) => {
 		const live = messages.filter((message) => (message as { role: string }).role !== "system");
@@ -416,7 +547,7 @@ export async function handleChatInput(
 						const updates = sideConversationEntries({ messages: current.messages, sideChats: sideContext.snapshot(chatId) });
 						return updates.length ? [...current.messages, ...updates] : current.messages;
 					}
-					const next = input.type === "steers" ? input.steers.filter((entry) => !steerDelivered(current.messages, entry.id)) : inputAppends(current, input);
+					const next = input.type === "steers" ? input.steers.filter((entry) => !steerDelivered(current.messages, entry.id)) : inputAppends(current, input, appendDeps());
 					const after = [...current.messages, ...next];
 					if (hasUnresolvedQuestion(after)) return current.messages;
 					const updates = sideConversationEntries({ messages: current.messages, sideChats: sideContext.snapshot(chatId) }, after);
@@ -532,7 +663,7 @@ export async function handleChatInput(
 			} else appends = submission.finish({ id: chatId, kind: record.kind, messages: record.messages });
 		} else appends = input.type === "steers"
 			? input.steers.filter((s) => !steerDelivered(record.messages, s.id))
-			: inputAppends(record, input);
+			: inputAppends(record, input, appendDeps());
 	} catch (err) {
 		if (err instanceof ChatInputError) {
 			return Response.json({ error: err.message }, { status: 400 });
@@ -557,14 +688,43 @@ export async function handleChatInput(
 			console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 			return new Response("Your input could not be saved. Please try again.", { status: 500 });
 		}
+		// The deferred answer still counts as evidence; nothing advances (no
+		// turn) and the mentor does not run (the last sibling's answer runs it).
+		await afterAnswer({ chatId, before: record.messages, answerAppends: appends, saved: merged, advance: false });
 		emit("record-changed", { chatId });
 		return settledTurnResponse(); // the cheap terminal — no beginTurn, no turn
 	}
 
+	// THE MENTOR'S ANSWERS (coach-planner design §4.5): a learner answer in
+	// a teaching session's node — a quiz/explain or ask_user_question
+	// answer, or a plugin teach question's — that this request saves and
+	// whose turn proceeds, and that is not a dismissal. Never steers,
+	// continue or retries; never the parallel-question deferral above (it
+	// returned already). THE PROBE has no mentor: the prober owns its map
+	// (draw_map / reflect), so a probe answer only stamps its evidence.
+	let mentorAnswer: { phase: "teach"; latest: AnsweredQuestion } | null = null;
+	let probing = false;
+	if ((input.type === "answer" || input.type === "plugin-question-answer") && (record.kind ?? "teach") === "teach") {
+		const kindNow = agentKindFor([...record.messages, ...appends]);
+		probing = kindNow === "prober";
+		const latest = kindNow === "teacher" ? latestLearnerAnswer(record.messages, appends) : null;
+		if (latest) mentorAnswer = { phase: "teach", latest };
+	}
+
 	// One turn per chat, ever. A second request while a turn runs means a
 	// stale/remounted client raced a live one — letting it through would
-	// double-run the teacher and clobber the first turn's persist.
-	if (!preparation && !beginTurn(chatId)) {
+	// double-run the teacher and clobber the first turn's persist. The
+	// mentor's answers claim through a turn PREPARATION (as plugin grading
+	// does): the chat counts as busy, viewers park on the stream, and the
+	// abort route reaches the review through the preparation's signal.
+	if (!preparation && mentorAnswer) {
+		const claim = claimPreparingTurn(chatId);
+		if (!claim) {
+			console.info(`[chat ${chatId}] turn already in flight — request rejected`);
+			return Response.json({ error: "A turn is already running for this session" }, { status: 409 });
+		}
+		preparation = claim;
+	} else if (!preparation && !beginTurn(chatId)) {
 		console.info(`[chat ${chatId}] turn already in flight — request rejected`);
 		return Response.json({ error: "A turn is already running for this session" }, { status: 409 });
 	}
@@ -586,6 +746,8 @@ export async function handleChatInput(
 	// build-return summaries. Never between a pending question call and
 	// its result: an answer that leaves a question open delivers nothing.
 	let buildCargo: BuildTurnCargo | null = null;
+	// The answer's own appends, before any cargo joins them (afterAnswer).
+	const answerAppends = appends;
 	if (input.type === "text" || input.type === "answer" || input.type === "plugin-question-answer") {
 		const current = stores.chatStore.getChat(chatId) ?? record;
 		buildCargo = record.kind === "build"
@@ -610,12 +772,12 @@ export async function handleChatInput(
 	// Only the learner/automatic input is write-ahead. Raw exchanges are
 	// already durable in sideChats; their delivery entries join the SDK
 	// request at its preparation boundary, and publish only if admitted.
-	const merged = [...record.messages, ...appends];
+	let merged = [...record.messages, ...appends];
 	// Retry preserves every persisted attempt. Pi needs a non-assistant
 	// tail to start continue(), so its temporary history omits the trailing
 	// failures only. Count that SAME temporary prefix at settlement, or the
 	// retained failures would make persistTurn skip genuinely new output.
-	const agentMessages = input.type === "retry" ? merged.filter((m) => !retryOmissions.has(m.id)) : merged;
+	let agentMessages = input.type === "retry" ? merged.filter((m) => !retryOmissions.has(m.id)) : merged;
 	const stagedAutomatic = isSubscriptionProvider(conversation.provider) && input.type === "steers";
 	let persistBaseCount = stagedAutomatic ? record.messages.length : agentMessages.length;
 	try {
@@ -628,6 +790,51 @@ export async function handleChatInput(
 	} catch (err) {
 		console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 		return new Response("Your input could not be saved. Please try again.", { status: 500 });
+	}
+	// AFTER THE ANSWER (coach-planner design §4.3/§4.5/§4.7): the answer is
+	// durable; stamp its evidence, run the mentor (its answers only), then
+	// apply the advance rule. The markers (plan-update, coach-card, then a
+	// node-handoff or planner-wake) land write-ahead right AFTER the
+	// answer's tool result and before any build cargo, so the agent built
+	// below already reflects them (agentKindFor) and the cargo stays inside
+	// the new agent's fresh context.
+	if ((input.type === "answer" || input.type === "plugin-question-answer") && inputSaved) {
+		const after = await afterAnswer({
+			chatId, before: record.messages, answerAppends, saved: merged, advance: !probing,
+			...(mentorAnswer && preparation ? {
+				mentor: {
+					...mentorAnswer,
+					engine: mentorEngine,
+					modelId: modelIdForCompaction,
+					systemPrompt: mentorInstructions(effective.agent.prompts),
+					signal: preparation.signal,
+					run: options.mentor ?? (process.env.NODE_ENV === "test" ? null : runMentor),
+				},
+			} : {}),
+		});
+		// An aborted review ends the request: the answer and its evidence
+		// are saved; the finally below releases the claim cleanly.
+		if (after.aborted || (preparation && (preparation.signal.aborted || !preparation.isCurrent()))) return Response.json({ ok: true });
+		// Nothing else may have written the record while the review ran (the
+		// turn gate was claimed); if something did, its markers are dropped
+		// rather than spliced into an unknown record.
+		const current = stores.chatStore.getChat(chatId)?.messages;
+		const untouched = !mentorAnswer || (current !== undefined && current.length === merged.length && current.at(-1)?.id === merged.at(-1)?.id);
+		if (!untouched) console.error(`[chat ${chatId}] the record changed during the mentor review — its markers are dropped`);
+		const advanceMarkers = untouched ? after.markers : [];
+		if (advanceMarkers.length > 0) {
+			const advanced = [...record.messages, ...answerAppends, ...advanceMarkers, ...(buildCargo?.markers ?? [])];
+			try {
+				stores.chatStore.saveMessages(chatId, advanced);
+				merged = advanced;
+				agentMessages = advanced;
+				persistBaseCount = advanced.length;
+			} catch (err) {
+				// The answer itself is saved; the next answer re-evaluates the
+				// advance rule. Run this turn on the saved record.
+				console.error(`[chat ${chatId}] advance persist failed:`, err);
+			}
+		}
 	}
 	// Visibility bookkeeping is not the canonical save. Its failure must
 	// neither misreport a saved input as lost nor prevent the turn running.
@@ -654,13 +861,15 @@ export async function handleChatInput(
 		});
 	};
 
-	// AGENT CONSTRUCTION BRANCH (docs/archive/probe-teach-split.md §2): the transcript
-	// is the seam — a probe_done call in the record means the probe is
-	// concluded: build the TEACHER (planning + the full toolset). Otherwise
-	// the session is still probing: build the PROBER (quiz/ask + probe_done).
-	// Both share this whole composition (write-ahead persist, liveness,
-	// steers, usage, extraction) — only the agent differs.
-	const teaching = hasProbeDone(agentMessages);
+	// AGENT CONSTRUCTION BRANCH (coach-planner design §4.1): the transcript
+	// is the seam — agentKindFor reads it. Before a concluded probe_done:
+	// the PROBER. After it, until the learner accepts the plan (a
+	// node-handoff marker), or after a later planner-wake: the PLANNER.
+	// Otherwise: the TEACHER. All share this whole composition (write-ahead
+	// persist, liveness, steers, usage) — only the agent differs. The test
+	// seam receives `teaching` (probe done) and the selected `kind`.
+	const kind = agentKindFor(agentMessages);
+	const teaching = kind !== "prober";
 	// BYOK (owner, 2026-09-22): the conversation chain was resolved by the
 	// turn gate above (chat.model override → strong slot → refused) — the
 	// engine build is pure from here; thinking levels clamp natively.
@@ -753,7 +962,7 @@ export async function handleChatInput(
 	// uniform across kinds).
 	const buildBranch = record.kind === "build" ? record.branch : undefined;
 	const constructed: TeachingAgent = buildAgent
-		? buildAgent({ ...agentOpts, teaching })
+		? buildAgent({ ...agentOpts, teaching, kind })
 		: buildBranch
 			? createBuildAgent(
 					{
@@ -789,7 +998,21 @@ export async function handleChatInput(
 					},
 					agentOpts,
 				)
-			: teaching
+			: kind === "planner"
+			? createPlannerAgent(
+					{
+						chatId,
+						chatStore: stores.chatStore,
+						// plan_batch writes the plan's facts to the knowledge graph
+						// regardless of the graph settings switch (tools/plan.ts).
+						graphStore: stores.graphStore,
+						jobStore: stores.jobStore,
+						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						searchAvailable,
+					},
+					agentOpts,
+				)
+			: kind === "teacher"
 			? createTeacherAgent(
 					{
 						chatId,
@@ -817,6 +1040,10 @@ export async function handleChatInput(
 						// knowledge graph through tools when the gate opens —
 						// graph master switch AND the agent.graphTools toggle.
 						...(graphToolsEnabled(effective) ? { graphStore: stores.graphStore } : {}),
+						// The prober's map (draw_map / reflect / the probe gate):
+						// written to and read from the knowledge graph regardless
+						// of the graph settings switches.
+						probeGraph: stores.graphStore,
 					},
 					agentOpts,
 				);
@@ -911,17 +1138,11 @@ export async function handleChatInput(
 						steps,
 					});
 				}
-				// GRAPH GATE (settings-storage wave, 2026-09-19): the write channel —
-				// extraction, its auditor — dies with the master switch.
-				// PRACTICE (owner, 2026-10-04): practice sessions write nothing —
-				// no extraction, no graph, no coverage (v1: the session itself
-				// is the deliverable).
-				if ((!requestCycle || requestCycle.dispatched) && record.kind !== "practice" && record.kind !== "build" && extractionEnabled(effective.graph)) {
-					// Fresh per-turn read of the graph section's chunk budget
-					// (extraction-UX redesign, 2026-09-24): the trigger compares
-					// against it and the pipeline's batches share it.
-					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
-				}
+				// NO AUTOMATIC EXTRACTION after a turn: practice and build
+				// sessions never extracted, and teach sessions stopped with the
+				// coach update (coach-planner design D12) — their facts come from
+				// the planner (plan_batch) instead. Notes/PDF imports and the
+				// manual extract route still run the pipeline.
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that
 				// persistTurn has landed the turn's messages, apply it against
@@ -975,7 +1196,7 @@ export async function handleChatInput(
 								fresh.compaction?.thresholdTokens,
 								catalogContextLimits().get(kickModelId),
 							),
-							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : freshRecord.kind === "build" ? "build" : "teacher").length / 4),
+							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : freshRecord.kind === "build" ? "build" : agentKindFor(freshRecord.messages)).length / 4),
 						};
 					}, chatId);
 			},

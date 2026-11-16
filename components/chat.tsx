@@ -58,6 +58,10 @@ import {
 	sideSegmentId,
 	textPartMessageId,
 	kbdEventForAction as kbdEventForChat,
+	hidesCoverage,
+	legacySessionRefusal,
+	LEGACY_SESSION_CODE,
+	type LessonProgress,
 	type ChatInput,
 	type ChatSettings,
 	type LhMessage,
@@ -71,6 +75,7 @@ import { ArrowRightIcon, DumbbellIcon, HammerIcon, MessageCircleQuestionIcon, Wa
 import { BuildButton, type BuildBranchSummary } from "@/components/build/build-button";
 import { BuildContextCard, BuildReturnCard, type BuildContextData, type BuildReturnData } from "@/components/build/build-cards";
 import { BUILD_DONE_PROMPT, WorkspacePanel } from "@/components/build/workspace-panel";
+import { ProbeEdgeCard } from "@/components/probe-edge-card";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
 import { PluginQuestionDock } from "./plugin-question-dock";
@@ -251,6 +256,109 @@ export function PendingTurnIndicator({ evaluating }: { evaluating: boolean }) {
 	);
 }
 
+/** The end-of-transcript live indicators, ONE at a time (coach-planner
+ *  design D5): the compaction notice, the coach's review (the answer's turn
+ *  waits for it, so it replaces the THINKING… placeholder), else the
+ *  pending-turn placeholder. Same register for all three. */
+export function TurnIndicators({ compacting, coaching, pending, evaluating }: {
+	compacting: boolean;
+	coaching: boolean;
+	pending: boolean;
+	evaluating: boolean;
+}) {
+	return (
+		<>
+			{compacting && (
+				<span className="flex items-center gap-2 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground">
+					<BrailleSpinner label="Compacting context" />
+					<Shimmer duration={1}>COMPACTING CONTEXT…</Shimmer>
+				</span>
+			)}
+			{coaching ? (
+				<span data-testid="coach-reviewing" className="flex items-center gap-2 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground">
+					<BrailleSpinner label="Coach is reviewing" />
+					<Shimmer duration={1}>COACH IS REVIEWING…</Shimmer>
+				</span>
+			) : pending ? (
+				<PendingTurnIndicator evaluating={evaluating} />
+			) : null}
+		</>
+	);
+}
+
+/** The coach's live review state for one chat: seeded from the server
+ *  snapshot (`coaching` in the page props / GET payload), then driven by
+ *  mentor-changed — the compaction-changed pattern. `onFinished` fires on
+ *  the falling edge (the review's results moved the lesson progress). */
+export function useCoachingState(chatId: string, initial: boolean, onFinished?: () => void): boolean {
+	const [coaching, setCoaching] = useState(initial);
+	const finishedRef = useRef(onFinished);
+	finishedRef.current = onFinished;
+	useServerEvent("mentor-changed", (p) => {
+		if (p.chatId !== chatId) return;
+		setCoaching(p.running);
+		if (!p.running) finishedRef.current?.();
+	});
+	return coaching;
+}
+
+/** The legacy-session refusal (HTTP 410, coach-planner design O4) from the
+ *  send error's text: the session-core keeps refusal bodies verbatim, so
+ *  the machine code survives to here. Pure, exported for tests. */
+export function parseLegacyRefusal(message: string | undefined): boolean {
+	if (!message) return false;
+	try {
+		return (JSON.parse(message) as { code?: unknown } | null)?.code === LEGACY_SESSION_CODE;
+	} catch {
+		return false;
+	}
+}
+
+/** The quiet line that replaces the composer on a legacy session. */
+export function LegacySessionNotice() {
+	return (
+		<p data-testid="legacy-session-notice" className="px-4 py-3 text-sm text-muted-foreground">
+			{legacySessionRefusal().error}
+		</p>
+	);
+}
+
+/** The id of the transcript's most recent plan block part (the Start
+ *  button sits under it); null without one. Pure, exported for tests. */
+export function lastPlanBlockId(messages: readonly LhViewMessage[]): string | null {
+	for (let m = messages.length - 1; m >= 0; m--) {
+		const parts = messages[m]!.parts;
+		for (let p = parts.length - 1; p >= 0; p--) {
+			if (parts[p]!.type === "data-plan-block") return parts[p]!.id ?? null;
+		}
+	}
+	return null;
+}
+
+/** Start (coach-planner design O3): accepts the presented plan. One click
+ *  posts once — it disables itself at once; the parent unmounts it when
+ *  the turn starts. A native button: focusable, Enter/Space activate. */
+export function PlanStartButton({ onStart }: { onStart: () => void }) {
+	const [clicked, setClicked] = useState(false);
+	return (
+		<div className="my-3 flex justify-center">
+			<Button
+				type="button"
+				data-testid="plan-start"
+				disabled={clicked}
+				onClick={(e) => {
+					blurAfterPointerClick(e);
+					if (clicked) return;
+					setClicked(true);
+					onStart();
+				}}
+			>
+				Start
+			</Button>
+		</div>
+	);
+}
+
 function isSubagentSteer(m: LhViewMessage): boolean {
 	return (m.metadata as { subagentResult?: unknown } | undefined)?.subagentResult != null;
 }
@@ -272,6 +380,8 @@ export function Chat({
 	initialPrompt,
 	initiallyInFlight,
 	initiallyCompacting = false,
+	initiallyCoaching = false,
+	initialProgress = null,
 	initialConfigured = false,
 	kind = "teach",
 }: {
@@ -294,6 +404,15 @@ export function Chat({
 	 * compaction-changed event already fired). The transcript spinner
 	 * and send gates key on it. */
 	initiallyCompacting?: boolean;
+	/** The mentor (the learner's "Coach", coach-planner design §4.5) is
+	 *  reviewing an answer at mount (server snapshot; the mentor-changed
+	 *  event carries later changes). Drives the COACH IS REVIEWING… line
+	 *  and the same send/dock gates as compaction. */
+	initiallyCoaching?: boolean;
+	/** The derived lesson progress at mount (coach-planner design §4.10):
+	 *  plan-node states, Start, the legacy notice and the coverage gate.
+	 *  The GET payload's `progress` refreshes it. */
+	initialProgress?: LessonProgress | null;
 	/** slotsConfigured(server record) — the persistent setup CTA keys on
 	 *  it (BYOK, owner 2026-09-22). The server gate stays the truth; this
 	 *  only decides whether the pill rides the composer. */
@@ -722,7 +841,7 @@ export function Chat({
 	};
 	const prepareBuiltin: PrepareBuiltinSubmission = ({ question, capture, isCurrent }: BuiltinSubmissionCapture) => {
 		const target = builtinTarget(question), original = pending;
-		if (!target || !original || busyRef.current || compacting) return;
+		if (!target || !original || busyRef.current || inputLocked) return;
 		void runSubmission(target, () => {
 			const raw = capture();
 			saveQuestionDraft(original.key, { readingThinking: readingThinkingRef.current });
@@ -752,7 +871,7 @@ export function Chat({
 	};
 	const prepareThinking: PrepareThinkingSubmission = (capture, clear) => {
 		const target = thinkingTarget();
-		if (!target || busyRef.current || compacting) return;
+		if (!target || busyRef.current || inputLocked) return;
 		let captured = "";
 		void runSubmission(target, () => ({ type: "thinking", content: { text: captured = capture(), images: [] } }), () => !busyRef.current && JSON.stringify(activeProblemOccurrenceOf(submissionLive.current.nativeMessages)) === JSON.stringify(target.problem.occurrence), async (prepared, attempt) => {
 			if (prepared.type !== "thinking") return false;
@@ -769,7 +888,7 @@ export function Chat({
 	};
 	const preparePluginProblem: PreparePluginProblemSubmission = (capture, isCurrent, onAccepted) => {
 		const original = activeProblem?.pluginProblem, occurrence = activeProblemOccurrence, target = pluginProblemTarget();
-		if (!target || !original || !occurrence || busyRef.current || compacting) return Promise.resolve(false);
+		if (!target || !original || !occurrence || busyRef.current || inputLocked) return Promise.resolve(false);
 		return runSubmission(target, () => {
 			const raw = capture();
 			return { type: "plugin-problem-submission", submission: raw.submission, submissionImages: [], thinking: { text: raw.thinking ?? "", images: [] } };
@@ -792,7 +911,7 @@ export function Chat({
 	};
 	const preparePluginQuestion: PreparePluginQuestionSubmission = (capture, isCurrent) => {
 		const target = pluginQuestionTarget();
-		if (!target || !pendingPlugin || busyRef.current || compacting) return Promise.resolve(false);
+		if (!target || !pendingPlugin || busyRef.current || inputLocked) return Promise.resolve(false);
 		const original = pendingPlugin;
 		return runSubmission(target, () => {
 			const raw = capture();
@@ -808,7 +927,7 @@ export function Chat({
 	};
 	const prepareText = (supplied?: string, openingAccepted?: () => void, beforePost?: (captured: string) => boolean) => {
 		const target = textTarget();
-		if (!target || pendingRef.current || pluginOwnsDock || activeProblemRef.current || compacting) return Promise.resolve(false);
+		if (!target || pendingRef.current || pluginOwnsDock || activeProblemRef.current || inputLocked) return Promise.resolve(false);
 		if (!busyRef.current && zeroKeys) { setSetupOpen(true); return Promise.resolve(false); }
 		if (!busyRef.current && selectedModelUnavailable(catalog, selectedModel)) { openModelPicker(); return Promise.resolve(false); }
 		let captured = "", capturedRevision = 0;
@@ -1125,14 +1244,61 @@ export function Chat({
 	// server's registry mutex is the structural gate; this is the
 	// affordance).
 	const [compacting, setCompacting] = useState(initiallyCompacting);
-	submissionLive.current.ready = !compacting && reconciliation === "ready";
+	// THE LESSON PROGRESS (coach-planner design §4.10): seeded by the page,
+	// refreshed from the GET payload wherever the record is re-read
+	// (syncTurns / syncFromServer) and when the coach finishes.
+	const [progress, setProgress] = useState<LessonProgress | null>(initialProgress);
+	const progressRefreshRef = useRef<() => void>(() => {});
+	// The coach (code name mentor) reviewing an answer: its own indicator,
+	// and the same send/retry/dock gates compaction holds.
+	const coaching = useCoachingState(chatId, initiallyCoaching, () => progressRefreshRef.current());
+	// A legacy session (created before the coach update, design O4): read-
+	// only. Known from the progress payload, or learned from a 410 refusal.
+	const [legacyRefused, setLegacyRefused] = useState(false);
+	const legacy = progress?.legacy === true || legacyRefused;
+	// Model gate: compaction or the coach holds the model; input lock adds
+	// the legacy refusal (composer and docks disabled).
+	const modelGate = compacting || coaching;
+	const inputLocked = modelGate || legacy;
+	// THE LEGACY REFUSAL: a 410 legacySession on any post shows the legacy
+	// line instead of the generic error banner. The server refuses before
+	// its write-ahead save, so the record is re-read (dropping the
+	// optimistic orphan) before the error clears.
+	const legacyRefusal = parseLegacyRefusal(error?.message);
+	useEffect(() => {
+		if (!legacyRefusal) return;
+		setLegacyRefused(true);
+		let cancelled = false;
+		void (async () => {
+			try { await readRecord({ isCurrent: () => !cancelled }); }
+			catch { /* the legacy line stands either way */ }
+			if (!cancelled) clearError();
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [legacyRefusal, readRecord, clearError]);
+	// Start (design O3): the presented plan waits for acceptance and nothing
+	// else holds the session. startSent hides it from the click until the
+	// next progress read (a refused post brings it back).
+	const [startSent, setStartSent] = useState(false);
+	const [startKey, setStartKey] = useState(0);
+	useEffect(() => { setStartSent(false); }, [progress]);
+	const canStart = progress?.canAcceptPlan === true && !startSent && !busy && !inputLocked && !pending && !pluginOwnsDock;
+	const acceptPlan = () => {
+		setStartSent(true);
+		void send({ type: "plan-accept" }).then((accepted) => {
+			if (!accepted) { setStartSent(false); setStartKey((k) => k + 1); }
+		});
+	};
+	submissionLive.current.ready = !inputLocked && reconciliation === "ready";
 	// A failed model response (issue #110): Retry keeps the saved input
 	// and completed work, without another learner message. Offered from
 	// "error" too: a dropped stream leaves the model there, and send()
 	// recovers from it. Later compaction requires new input instead.
-	const retryable = !pluginOwnsDock && (status === "ready" || status === "error") && !busy && !compacting && endsInFailedTurn(nativeMessages);
+	const retryable = !pluginOwnsDock && (status === "ready" || status === "error") && !busy && !inputLocked && endsInFailedTurn(nativeMessages);
 	const retryFailedTurn = () => retryFailedResponse(send, draftRef);
-	const sendAllowed = !pluginOwnsDock && reconciliation === "ready" && !pending && !activeProblem && !compacting && !submissionRunner.occupied;
+	const sendAllowed = !pluginOwnsDock && reconciliation === "ready" && !pending && !activeProblem && !inputLocked && !submissionRunner.occupied;
 	const pendingTextTarget = textTarget();
 	const pendingTextInput = !!pendingTextTarget && !!pluginManager?.hasPendingSubmissionInput(pendingTextTarget);
 	const pendingThinkingTarget = thinkingTarget();
@@ -1147,7 +1313,7 @@ export function Chat({
 		!pending &&
 		!pluginOwnsDock &&
 		!activeProblem &&
-		!compacting &&
+		!modelGate &&
 		!busy &&
 		nativeMessages.some(
 			(m) => m.role === "assistant" && m.content.some(
@@ -1175,6 +1341,7 @@ export function Chat({
 		if (!record) return;
 		if (Array.isArray(record.turns)) setTurns(record.turns);
 		setPricing(record.pricing);
+		if (record.progress) setProgress(record.progress);
 		// The continuation seam (contracts.ts protocol §4): a job result
 		// landing in the record leaves the agent owing a continuation — the
 		// record ENDS on un-consumed results, the dock owns no question, and
@@ -1293,6 +1460,8 @@ export function Chat({
 	// The session's live plan (drives the top-bar chip; the marginalia
 	// derives its own from the same transcript).
 	const planTree = useMemo(() => latestTree(messages), [messages]);
+	// The plan block the Start button sits under.
+	const latestPlanBlockId = useMemo(() => lastPlanBlockId(messages), [messages]);
 
 	// ── Session usage (wave-4 stats bar) ──
 	// The money channel: the record's turns log and read-time server Pi
@@ -1317,10 +1486,14 @@ export function Chat({
 			if (!record) return;
 			if (Array.isArray(record.turns)) setTurns(record.turns);
 			setPricing(record.pricing);
+			if (record.progress) setProgress(record.progress);
 		} catch {
 			// transient blip: stats stay on the last known figures
 		}
 	}, [readRecord]);
+	// The coach's falling edge re-reads the progress (its review moved
+	// the numbers, the plan, or the current node).
+	progressRefreshRef.current = () => void syncTurns();
 	useEffect(() => {
 		void syncTurns();
 	}, [syncTurns]);
@@ -1749,7 +1922,9 @@ export function Chat({
 					{/* Practice (owner, 2026-10-04): the coverage ring hides —
 				    practice never extracts, so an ever-filling ring with no
 				    run behind it would lie. */}
-					{kind === "teach" && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
+					{/* Coach-design teach sessions run no automatic extraction
+					    (design D12): no ring. Legacy teach sessions keep it. */}
+					{kind === "teach" && !hidesCoverage(progress) && <CoverageRing chatId={chatId} refreshKey={coverageTick} />}
 					{/* Practice sessions: no phase arc — a quiet Practice tag
 					    instead of the phase chip. */}
 					{kind === "practice" ? (
@@ -1837,6 +2012,8 @@ export function Chat({
 												return <BuildContextCard key={pi} data={part.data as BuildContextData} />;
 											case "data-build-return":
 												return <BuildReturnCard key={pi} data={part.data as BuildReturnData} />;
+											case "data-probe-edge":
+												return <ProbeEdgeCard key={pi} data={part.data} />;
 											case "data-practice-next":
 												// The learner's move-on signal (owner round 16): a compact
 												// centered mono-caps line — chrome, the dismissal register.
@@ -1972,11 +2149,15 @@ export function Chat({
 														// The plan in the chat (wave 4): a frozen snapshot
 														// block — rendered as carried, never re-derived.
 														return (
-															<PlanBlock
-																key={pi}
-																data={part.data as PlanBlockData}
-																onOpen={() => setPlanOpen(true)}
-															/>
+															<Fragment key={pi}>
+																<PlanBlock
+																	data={part.data as PlanBlockData}
+																	onOpen={() => setPlanOpen(true)}
+																/>
+																{/* Start (design O3) sits directly under the
+																    most recent plan block. */}
+																{canStart && part.id === latestPlanBlockId && <PlanStartButton key={startKey} onStart={acceptPlan} />}
+															</Fragment>
 														);
 													case "tool-quiz":
 													case "tool-probe":
@@ -1984,7 +2165,7 @@ export function Chat({
 													case "tool-explain":
 													case "tool-recall": {
 														const malformed = !busy && malformedQuestions.find(call => call.messageId === part.sourceMessageId && call.contentIndex === part.sourceContentIndex && call.toolCallId === part.toolCallId);
-														if (malformed) return <MalformedQuestion key={pi} disabled={!!pending || compacting}
+														if (malformed) return <MalformedQuestion key={pi} disabled={!!pending || inputLocked}
 															reason={pending ? "Answer or discard the remaining question first." : undefined}
 															onRetry={() => {
 																draftRef.current = null;
@@ -2037,17 +2218,21 @@ export function Chat({
 						    the summarizer holds the model gate. Mutually exclusive with
 						    the THINKING placeholder by construction (the gate sits
 						    BEFORE beginTurn; the settle kick runs after endTurn). */}
-							{compacting && (
-								<span className="flex items-center gap-2 font-ui text-xs font-medium uppercase tracking-wide text-muted-foreground">
-									<BrailleSpinner label="Compacting context" />
-									<Shimmer duration={1}>COMPACTING CONTEXT…</Shimmer>
-								</span>
-							)}
-							{(status === "submitted" || turnInFlight) && (
-								<PendingTurnIndicator evaluating={evaluating} />
-							)}
+							{/* A plan waiting for Start with no plan block to sit
+							    under (the snapshot could not splice): Start rides
+							    the end of the transcript instead. */}
+							{canStart && latestPlanBlockId === null && <PlanStartButton key={startKey} onStart={acceptPlan} />}
+							{/* The coach's review (design D5) joins the register
+							    and replaces THINKING… while it runs — one
+							    indicator at a time. */}
+							<TurnIndicators
+								compacting={compacting}
+								coaching={coaching}
+								pending={status === "submitted" || turnInFlight}
+								evaluating={evaluating}
+							/>
 							{openingError && <p role="alert" className="text-sm text-destructive">{OPENING_PROMPT_FAILURE}</p>}
-							{error && (
+							{error && !legacyRefusal && (
 								<div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
 									<span>Something went wrong: {error.message}</span>
 									{retryable && (
@@ -2081,14 +2266,17 @@ export function Chat({
 					onPrepareThinking={prepareThinking}
 					pendingThinkingInput={pendingThinkingInput}
 					onPreparePluginQuestion={preparePluginQuestion}
-					preparing={submissionRunner.occupied}
+					preparing={submissionRunner.occupied || coaching || legacy}
 					preparationStatus={<>
 						{preparationError && <p role="alert" className="px-4 py-2 text-sm text-destructive">{preparationError}</p>}
+						{/* A legacy session with a dock owning the band: the
+						    same line, above the disabled dock. */}
+						{legacy && (pending || pendingPlugin || unreadablePlugin || activeProblem) && <LegacySessionNotice />}
 					</>}
 					pluginQuestion={pendingPlugin}
 					pluginDraft={pendingPlugin ? pluginQuestionDraft(pendingPlugin) : undefined}
 					pluginAvailable={!!pendingPlugin && pluginQuestionAvailability?.questionId === pendingPlugin.questionId && pluginQuestionAvailability.status === "available"}
-					pluginReady={!busy && !compacting && reconciliation === "ready"}
+					pluginReady={!busy && !inputLocked && reconciliation === "ready"}
 					onPluginMicAvailable={setPluginMicAvailable}
 					onPluginSend={send}
 					onPluginDismiss={() => pendingPlugin ? dismissPluginQuestion(pendingPlugin.occurrence, pendingPlugin.questionId) : unreadablePlugin ? dismissPluginQuestion(unreadablePlugin.occurrence, unreadablePlugin.annotation.status === "unreadable" ? unreadablePlugin.annotation.identity?.questionId : undefined) : Promise.resolve()}
@@ -2103,14 +2291,14 @@ export function Chat({
 					pluginPractice={activeProblem?.pluginProblem && activeProblemOccurrence ? {
 						snapshot: activeProblem.pluginProblem, occurrence: activeProblemOccurrence, chatId, draft: pluginProblemDraft(activeProblem.pluginProblem),
 						available: pluginProblemAvailability?.problemId === activeProblem.pluginProblem.problemId && pluginProblemAvailability.status === "available",
-						ready: !busy && !compacting && reconciliation === "ready", reconciliation: activeProblemOf(canonicalMessages)?.pluginProblem?.problemId === activeProblem.pluginProblem.problemId ? reconciliation : "syncing",
-						prepareSubmission: preparePluginProblem, send, preparing: submissionRunner.occupied, compactionRunning: compacting, onEscape: dictation.cancel,
+						ready: !busy && !inputLocked && reconciliation === "ready", reconciliation: activeProblemOf(canonicalMessages)?.pluginProblem?.problemId === activeProblem.pluginProblem.problemId ? reconciliation : "syncing",
+						prepareSubmission: preparePluginProblem, send, preparing: submissionRunner.occupied || coaching || legacy, compactionRunning: compacting, onEscape: dictation.cancel,
 					} : undefined}
 					compactionRunning={compacting}
 					onSubmitThinking={submitThinking}
 					chatId={chatId}
 					onModelChange={recordSelectedModel}
-					plan={hasPlan ? <PlanMarginalia messages={messages} /> : undefined}
+					plan={hasPlan ? <PlanMarginalia messages={messages} progress={progress} /> : undefined}
 					onOpenPlan={() => setPlanOpen(true)}
 					requiresReveal={requiresReveal}
 					readingThinking={readingThinkingSeed.value}
@@ -2143,7 +2331,11 @@ export function Chat({
 							)
 						)
 					}
-					composer={
+					composer={legacy ? (
+						// Legacy session (design O4): read-only — the quiet line
+						// sits where the composer and its hint go.
+						<LegacySessionNotice />
+					) : (
 						<ChatSessionComposer
 							// Stop aborts ANY in-flight turn (stream-reattach wave): the
 							// square renders while a reattached/wake turn runs too — the
@@ -2167,7 +2359,7 @@ export function Chat({
 							onNext={sendNext}
 							placeholder={nextReady ? "Ask anything, or press Enter for the next one." : undefined}
 						/>
-					}
+					)}
 					onSubmitAnswer={(output) => {
 						if (!pending) return;
 						// THE ANSWER IS THE QUESTION CALL'S TOOL RESULT (fork 1, owner
@@ -2241,7 +2433,7 @@ export function Chat({
 						onClose={() => setFigureFocus(null)}
 					/>
 				)}
-				{planOpen && <PlanPopup messages={messages} onClose={() => setPlanOpen(false)} />}
+				{planOpen && <PlanPopup messages={messages} progress={progress} onClose={() => setPlanOpen(false)} />}
 				<SelectionToolbar viewport={transcriptElement} actions={selectionActions} />
 				{citationEdit && (
 					<CitationCommentPopover

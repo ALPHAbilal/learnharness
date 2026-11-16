@@ -17,7 +17,7 @@ Optional web search supports Tavily, Brave, Exa, Firecrawl, and hosted Ollama se
 
 ## Start a session
 
-Choose **Teach** and describe what you want to understand. The agent probes your starting point, presents a plan, and teaches through explanations and checks. Reply naturally to accept or revise the plan.
+Choose **Teach** and describe what you want to understand. The agent first tests what you already hold of the facts your goal depends on, then presents a plan of up to four steps, each made of facts. Accept the plan to begin teaching, or reply to ask for changes. The teacher works through one step at a time with explanations and checks, and the lesson moves on when your graded answers show you hold every fact of the step. A silent coach reviews each answer and can add a missing fact or step. When at most one step is left, the planner adds the next ones for you to accept. Lessons created with earlier versions that used the old single-teacher plan stay readable but cannot be continued.
 
 Use the thinking fields to explain your reasoning, uncertainty, or reaction—not only your selected answer. You can type or dictate. Your confidence is self-reported, not an independent assessment.
 
@@ -53,7 +53,7 @@ For lessons, attach material to a session instead. Use the graph's **Extract fil
 - Imported text then goes through model-based proposition/chain extraction. Local PDF conversion does not make the whole import offline.
 - Completed chunks survive later failures. Retry is explicit and reprocesses the file; unchanged content is not automatically skipped. The file queue does not survive a page reload.
 
-The graph stores propositions and reasoning chains with source provenance, **not mastery scores**. A proposition's presence is not proof that you understood or retained it. Automatic session extraction can be disabled independently of graph rendering.
+The graph stores propositions and reasoning chains with source provenance, **not mastery scores**. A proposition's presence is not proof that you understood or retained it. Lessons write their planned facts into the graph directly; sessions are no longer extracted automatically. Your graded answers about lesson facts are kept in a separate record, from which the app derives how likely you are to know each fact.
 
 ## Data, privacy, and usage
 

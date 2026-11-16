@@ -19,7 +19,7 @@
 
 ## Teaching method
 
-[The theory of learning and teaching](teaching-methodology.md) is the owner's theory underlying the teaching method. It is not a runtime specification or evidence of measured learning outcomes.
+[The theory of learning and teaching](teaching-methodology.md) is the owner's theory underlying the teaching method; its last section notes how the current system runs it. It is not a runtime specification or evidence of measured learning outcomes.
 
 ## History
 

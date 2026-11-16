@@ -149,7 +149,7 @@ export function QuestionDock({
 	// anything that slips through renders the quiet fallback, never a
 	// crash on `.map` over model-authored bytes.
 	const parsed = useMemo(() =>
-		canonical === "quiz" ? parseQuizInput(input) : canonical === "explain" ? parseExplainInput(input) : parseAskInput(input), [canonical, input]);
+		canonical === "quiz" ? parseQuizInput(input, toolName) : canonical === "explain" ? parseExplainInput(input) : parseAskInput(input), [canonical, input]);
 	if (!parsed) {
 		return <MalformedQuestion />;
 	}
@@ -673,7 +673,7 @@ function QuestionDockForm({
 										)}
 									</span>
 									<span>
-										<ToolContentResponse>{opt.label}</ToolContentResponse>
+										<ToolContentResponse plainLinks>{opt.label}</ToolContentResponse>
 										{kind !== "quiz" && opt.description && (
 											// Option subtext renders in Source Sans 3 (owner's mockup);
 											// the "I don't know" copy stays JetBrains Mono. QUIZ options render

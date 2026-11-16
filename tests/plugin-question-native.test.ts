@@ -230,7 +230,8 @@ test("chat-handler saves the genuine native answer before teacher construction, 
 		const input = { type: "plugin-question-answer" as const, questionId: snapshot.questionId, occurrence: snapshot.occurrence, answer: false, thinking: "" };
 		const response = await handleChatInput(chat.id, input, options => {
 			constructed++;
-			const durable = stores.chatStore.getChat(chat.id)!.messages.at(-1)! as any;
+			// The answer is durable; the mentor's coach card (a hidden marker) follows it.
+			const durable = stores.chatStore.getChat(chat.id)!.messages.findLast((message) => message.role === "toolResult")! as any;
 			assert.equal(durable.details.kind, "plugin-question");
 			assert.equal(durable.details.answer, false);
 			assert.deepEqual(durable.lhQuestionOccurrence, snapshot.occurrence);

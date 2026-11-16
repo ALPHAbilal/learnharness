@@ -13,8 +13,8 @@ import { layout as dagreLayout } from "dagre-d3-es/src/dagre/index.js";
 // d3's curveBasis (the exact recipe dagre-d3's own renderer uses).
 import { curveBasis, line } from "d3-shape";
 import { fitGraphView, fitZoomFor, zoomedGraphView, type Viewport } from "@/components/pan-zoom";
-import type { PlanBlockData, PlanNodeStatus, PlanTree } from "@/src/core";
-import { derivedNodeStatus, derivePlanStatuses } from "@/src/core";
+import type { LessonProgress, PlanBlockData, PlanNodeStatus, PlanTree } from "@/src/core";
+import { derivedNodeStatus, derivePlanStatuses, usesLessonStatuses } from "@/src/core";
 import { Hint } from "@/components/ui/hint";
 import { InteractionLayerOwner, useInteractionLayer } from "./interaction-layers";
 
@@ -94,6 +94,8 @@ export const GAP_Y = 48;
 export interface LayoutNode {
 	id: string;
 	title: string;
+	/** Who added the node (plan contract): coach-added nodes draw dashed. */
+	origin?: "planner" | "coach";
 }
 
 /** Topological order + longest-path depth (Kahn, authoring tie-break) —
@@ -445,20 +447,32 @@ export function edgePathD(
 // and the current node carries a faint yellow glow (a blurred yellow fill
 // bleeding over the edges). The IN-CHAT block is monochrome instead — no
 // status language; the popup/window show the progression.
-const BOX: Record<PlanNodeStatus, string> = {
+/** A node's status on the diagram: the plan contract's derived statuses,
+ *  plus "passed" (coach-planner design §4.10) — every fact of the node is
+ *  at the pass line. UI-only; the snapshot contract is unchanged. */
+export type DiagramStatus = PlanNodeStatus | "passed";
+
+const BOX: Record<DiagramStatus, string> = {
 	// 50%-opacity app background instead of true transparency: a routed
 	// edge passing behind the box composites UNDER the fill — dimmed to
 	// half, not shown straight through (owner, round 9).
 	visited: "fill-background/50 stroke-line-strong",
 	current: "fill-background/50 stroke-line-strong",
+	// Passed: the visited look, plus the check mark drawn in the node.
+	passed: "fill-background/50 stroke-line-strong",
 	// The grayed-out not-yet-visited look stays as-is (owner).
 	upcoming: "fill-card stroke-border",
 };
-const TEXT: Record<PlanNodeStatus, string> = {
+const TEXT: Record<DiagramStatus, string> = {
 	visited: "fill-line-strong text-xs",
 	current: "fill-line-strong text-xs font-medium",
+	passed: "fill-line-strong text-xs",
 	upcoming: "fill-muted-foreground/80 text-xs",
 };
+/** Coach-added nodes (origin "coach") draw a dashed outline. */
+export const COACH_DASH = "4 3";
+/** The per-node progress bar's height, along the box's bottom edge. */
+const PROGRESS_H = 2;
 // The in-chat block speaks the dock language now (owner, plan-hug
 // round 2026-10-07): boxes in the lighter background variant like
 // the composer/dock shells — but the outlines STAY the strong line ink,
@@ -476,6 +490,7 @@ export function PlanDiagram({
 	nodes,
 	edges,
 	statusOf,
+	progressOf,
 	glowId,
 	markerId,
 	viewBoxOverride,
@@ -487,7 +502,10 @@ export function PlanDiagram({
 }: {
 	nodes: readonly LayoutNode[];
 	edges: ReadonlyArray<{ from: string; to: string }>;
-	statusOf: (id: string) => PlanNodeStatus;
+	statusOf: (id: string) => DiagramStatus;
+	/** The fraction (0..1) of a node's facts at the pass line; a started,
+	 *  not-passed node draws a thin bar along its bottom edge. */
+	progressOf?: (id: string) => number;
 	glowId?: string | null;
 	markerId: string;
 	/** A windowed viewBox (the plan window) instead of the full extent. */
@@ -618,20 +636,47 @@ export function PlanDiagram({
 				const h = layout.nodeH.get(n.id) ?? NODE_H;
 				const w = layout.nodeW.get(n.id) ?? NODE_W_MIN;
 				const y0 = (h - lines.length * LINE_H) / 2 + 10;
+				const coach = !monochrome && n.origin === "coach";
+				const progress = monochrome || status === "passed" ? 0 : Math.min(1, Math.max(0, progressOf?.(n.id) ?? 0));
 				return (
 					<g
 						key={n.id}
 						transform={`translate(${layout.x.get(n.id) ?? 0}, ${layout.y.get(n.id) ?? 0})`}
 						data-testid={`plan-node-${n.id}`}
 						data-status={status}
+						data-origin={coach ? "coach" : undefined}
 					>
-						{/* Rectangular — no corner rounding (owner). */}
+						{/* Rectangular — no corner rounding (owner). Coach-added
+						    nodes draw dashed (coach-planner design D14). */}
 						<rect
 							width={w}
 							height={h}
 							className={monochrome ? MONO_BOX : BOX[status]}
 							strokeWidth={STROKE_W}
+							strokeDasharray={coach ? COACH_DASH : undefined}
 						/>
+						{progress > 0 && (
+							// Started, not passed: the share of facts at the pass line.
+							<rect
+								data-testid={`plan-node-progress-${n.id}`}
+								x={0}
+								y={h - PROGRESS_H}
+								width={Math.round(w * progress * 100) / 100}
+								height={PROGRESS_H}
+								className="fill-line-strong"
+							/>
+						)}
+						{!monochrome && status === "passed" && (
+							// Passed: a small check mark in the top-right padding.
+							<path
+								data-testid={`plan-node-check-${n.id}`}
+								d={`M${w - 13},8 L${w - 10},11 L${w - 5},5`}
+								className="fill-none stroke-success"
+								strokeWidth={1.25}
+								strokeLinecap="round"
+								strokeLinejoin="round"
+							/>
+						)}
 						{glow && (
 							// The current node's highlight: faint yellow, blurred so it
 							// bleeds over the edges — static, no pulse (owner, round 6).
@@ -708,22 +753,94 @@ export function PlanBlock({ data, onOpen }: { data: PlanBlockData; onOpen: () =>
 
 /** Minimal structural message slice (same trick as phases.ts). */
 export interface PopupMessage {
-	parts: ReadonlyArray<{ type: string; state?: string; input?: unknown; output?: unknown }>;
+	parts: ReadonlyArray<{ type: string; state?: string; input?: unknown; output?: unknown; data?: unknown }>;
 }
 
-/** The latest plan tree in the transcript (latest tool-plan_ output). */
+/** The latest plan tree in the transcript: whichever is later — a
+ *  successful plan tool output (tool-plan_*) or a coach plan-update
+ *  (the non-rendered data-plan-update part, coach-planner design §4.2). */
 export function latestTree(messages: readonly PopupMessage[]): PlanTree | null {
 	for (let m = messages.length - 1; m >= 0; m--) {
 		const parts = messages[m]?.parts;
 		if (!parts) continue;
 		for (let p = parts.length - 1; p >= 0; p--) {
 			const part = parts[p]!;
-			if (!part.type.startsWith("tool-plan_") || part.state !== "output-available") continue;
-			const output = part.output as { tree?: PlanTree } | undefined;
-			if (output?.tree && Array.isArray(output.tree.nodes)) return output.tree;
+			let tree: PlanTree | undefined;
+			if (part.type === "data-plan-update") tree = (part.data as { tree?: PlanTree } | undefined)?.tree;
+			else if (part.type.startsWith("tool-plan_") && part.state === "output-available") tree = (part.output as { tree?: PlanTree } | undefined)?.tree;
+			if (tree && Array.isArray(tree.nodes)) return tree;
 		}
 	}
 	return null;
+}
+
+/** The live map's node states. Coach-design records (usesLessonStatuses:
+ *  a current node, or nodes with facts) read the lesson progress —
+ *  passed, then current (the latest handoff's node), otherwise upcoming;
+ *  the glow follows the current node while it is not passed. Legacy
+ *  records keep the tagged-call derivation (derivePlanStatuses). Pure. */
+export function planStatusesFor(
+	tree: PlanTree,
+	messages: readonly PopupMessage[],
+	progress?: LessonProgress | null,
+): { statusOf: (id: string) => DiagramStatus; glowId: string | null; progressOf?: (id: string) => number } {
+	if (progress && usesLessonStatuses(tree, progress)) {
+		const current = progress.currentNodeId;
+		const statusOf = (id: string): DiagramStatus =>
+			progress.nodes[id]?.passed ? "passed" : id === current ? "current" : "upcoming";
+		return {
+			statusOf,
+			glowId: current !== null && statusOf(current) === "current" ? current : null,
+			progressOf: (id) => progress.nodes[id]?.progress ?? 0,
+		};
+	}
+	const statuses = derivePlanStatuses(tree, messages as Parameters<typeof derivePlanStatuses>[1]);
+	return { statusOf: (id) => derivedNodeStatus(statuses, id), glowId: statuses.current };
+}
+
+/** The legend under the popup's diagram — only when the coach added a node. */
+export function CoachLegend({ tree }: { tree: PlanTree }) {
+	if (!tree.nodes.some((n) => n.origin === "coach")) return null;
+	return (
+		<div data-testid="plan-popup-legend" className="flex items-center gap-1.5 text-xs text-muted-foreground">
+			<svg width={16} height={10} aria-hidden="true" className="shrink-0">
+				<rect x={0.5} y={0.5} width={15} height={9} className="fill-none stroke-line-strong" strokeWidth={STROKE_W} strokeDasharray={COACH_DASH} />
+			</svg>
+			added by the coach
+		</div>
+	);
+}
+
+/** The current node's facts under the popup's diagram: the node title,
+ *  then each fact's statement with its number right-aligned, and a quiet
+ *  marker on a confident wrong answer. Nothing without a current node. */
+export function CurrentNodeFacts({ tree, progress }: { tree: PlanTree; progress?: LessonProgress | null }) {
+	if (!progress || progress.legacy || progress.currentNodeId === null) return null;
+	const node = tree.nodes.find((n) => n.id === progress.currentNodeId);
+	if (!node) return null;
+	return (
+		<div data-testid="plan-popup-facts" className="flex max-h-48 flex-col gap-1 overflow-y-auto">
+			<div className="text-sm font-medium">{node.title}</div>
+			<ul className="flex flex-col gap-1">
+				{(node.facts ?? []).map((fact) => {
+					const known = progress.facts[fact.id];
+					return (
+						<li key={fact.id} data-testid={`plan-fact-${fact.id}`} className="flex items-baseline gap-3 text-xs">
+							<span className="min-w-0 flex-1 leading-relaxed text-muted-foreground">
+								{fact.statement}
+								{known?.misconception && (
+									<span data-testid={`plan-fact-misconception-${fact.id}`} className="ml-1.5 text-warning">
+										answered wrong with high confidence
+									</span>
+								)}
+							</span>
+							<span className="shrink-0 tabular-nums text-foreground">{known ? `${Math.round(known.p * 100)}%` : ""}</span>
+						</li>
+					);
+				})}
+			</ul>
+		</div>
+	);
 }
 
 /** The popup shows the glow, so its frame pads by the glow's reach —
@@ -747,13 +864,19 @@ const POPUP_PAD = GLOW_REACH;
  * territory. Surface 80% + blur (owner decision): the transcript ghosts
  * through while the focus owns the session area.
  */
-export function PlanPopup({ messages, onClose }: { messages: readonly PopupMessage[]; onClose: () => void }) {
+export function PlanPopup({ messages, onClose, progress }: {
+	messages: readonly PopupMessage[];
+	onClose: () => void;
+	/** The lesson progress (chat GET payload): coach-design node states,
+	 *  per-node progress and the current node's facts. */
+	progress?: LessonProgress | null;
+}) {
 	const tree = useMemo(() => latestTree(messages), [messages]);
 	const statuses = useMemo(
-		() => (tree ? derivePlanStatuses(tree, messages as Parameters<typeof derivePlanStatuses>[1]) : null),
-		[tree, messages],
+		() => (tree ? planStatusesFor(tree, messages, progress) : null),
+		[tree, messages, progress],
 	);
-	const statusOf = (id: string): PlanNodeStatus => (statuses ? derivedNodeStatus(statuses, id) : "upcoming");
+	const statusOf = (id: string): DiagramStatus => (statuses ? statuses.statusOf(id) : "upcoming");
 
 	const rootRef = useRef<HTMLDivElement>(null);
 	const layer = useInteractionLayer({
@@ -929,7 +1052,8 @@ export function PlanPopup({ messages, onClose }: { messages: readonly PopupMessa
 								nodes={tree.nodes}
 								edges={tree.edges}
 								statusOf={statusOf}
-								glowId={statuses?.current ?? null}
+								progressOf={statuses?.progressOf}
+								glowId={statuses?.glowId ?? null}
 								markerId={markerId}
 								pad={POPUP_PAD}
 								naturalSize
@@ -978,6 +1102,12 @@ export function PlanPopup({ messages, onClose }: { messages: readonly PopupMessa
 					</div>
 				)}
 			</div>
+			{tree && (
+				<div className="mt-2 flex flex-col gap-2 empty:hidden">
+					<CoachLegend tree={tree} />
+					<CurrentNodeFacts tree={tree} progress={progress} />
+				</div>
+			)}
 		</div>
 		</InteractionLayerOwner.Provider>
 	);

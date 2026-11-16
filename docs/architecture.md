@@ -20,7 +20,7 @@ This reference describes the [repository source](README.md#about-these-docs). Se
 
 ## Conversations and turns
 
-A **conversation** is a durable `ChatRecord` with native `LhMessage[]`, settings, optional plan, and usage logs. Missing `kind` means teaching; `practice` selects the practitioner. An **engine** is the resolved Pi model, stream function, and thinking level. An application **turn** constructs a fresh native Pi `Agent` from saved history; it can make several model calls and execute tools. It is not an HTTP connection or a single generation.
+A **conversation** is a durable `ChatRecord` with native `LhMessage[]`, settings, optional plan and probe fact list, and usage logs. Missing `kind` means teaching; `practice` selects the practitioner. An **engine** is the resolved Pi model, stream function, and thinking level. An application **turn** constructs a fresh native Pi `Agent` from saved history; it can make several model calls and execute tools. It is not an HTTP connection or a single generation.
 
 ```mermaid
 flowchart LR
@@ -40,7 +40,7 @@ flowchart LR
 
 The stored record has two projections:
 
-- [`toLlmMessages`](../src/core/native-messages.ts) strips app metadata, flattens model-facing markers, applies the active compaction cut, and repairs eligible interrupted tool pairs at the provider boundary.
+- [`toLlmMessages`](../src/core/native-messages.ts) strips app metadata, flattens model-facing markers, applies the active compaction cut and, for the teacher and planner, the [fresh-context boundary](#fresh-context), and repairs eligible interrupted tool pairs at the provider boundary.
 - [`projectView`](../src/core/view.ts) derives UI messages, question/problem docks, and artifacts. It is not the stored format or provider wire.
 
 Pi seeds the system prompt/tools at construction; that synthetic system message is not persisted. New turns therefore get current instructions. The app does not use the AI SDK's client-transcript replacement or `addToolOutput` loop.
@@ -65,21 +65,67 @@ A side answer is **not an application turn**. [`server/side-chat.ts`](../src/ser
 
 ## Teaching and practice
 
-[`teacher-agent.ts`](../src/agent/teacher-agent.ts) and the [tool registry](../src/agent/tools.ts) compose different agents over the same teaching history:
+[`teacher-agent.ts`](../src/agent/teacher-agent.ts) and the [tool registry](../src/agent/tools.ts) compose different agents. A teaching session runs the prober, planner and teacher over one record; practice and build sessions each run one agent:
 
 | Agent | Interaction | Other tools |
 | --- | --- | --- |
 | Prober | `probe` or `recall`, `ask_user_question`, `probe_done` | Read-only files, research/PDF dispatch; gated graph readers |
-| Teacher | `quiz` or `explain`, `ask_user_question`, `plan_init` | Read-only files, research/PDF/demo/visual dispatch; `show_image` |
+| Planner | `plan_batch` | Read-only files, research dispatch |
+| Teacher | `quiz` or `explain`, `ask_user_question` | Read-only files, research/PDF/demo/visual dispatch; `show_image` |
 | Practitioner | `problem`, `conclude` | Read-only files, research/PDF dispatch; gated graph readers |
+| Build coach | Workspace tools ([build branches](#build-branches)) | Read-only files |
 
-Mechanic choices, settings toggles, and readiness affect availability. Practice side tools are composed separately from teaching toggles. Claude-family agents can receive `send_to_user`. Argument healing precedes semantic validation; invalid calls return errors the model can correct.
+Mechanic choices, settings toggles, and readiness affect availability. Practice side tools are composed separately from teaching toggles. Claude-family agents can receive `send_to_user`. Plugin contributions (for example the Coding questions plugin's `coding_question`) reach the prober, teacher and practitioner, never the planner or build coach. Argument healing precedes semantic validation; invalid calls return errors the model can correct.
 
 Question tools validate and execute server-side, returning a synthetic terminating placeholder. It stops a clean question pose, including mixed tool batches, but is not saved. The actual learner answer becomes the call's result later. The browser shuffles options and grades select questions; free recall exposes the committed answer for model judgment. Sibling pending questions are answered without inference until the last is resolved.
 
-A matching successful `probe_done` result selects the teacher and queues a fresh-agent handoff. A bare/refused call does not. Planning begins at that seam; displayed teaching begins at the first node-tagged `quiz`/`explain`, not `plan_init`. The plan is a validated Mermaid DAG, replaceable through `plan_init`. Current/visited positions derive from tagged calls, not grades. Waiting for the learner's natural reply to the plan is prompt doctrine, not an acceptance transaction.
+Each turn, [`agentKindFor`](../src/core/native-messages.ts) selects the teaching agent from the record alone: the **prober** until a `probe_done` call has a matching successful result (a bare/refused call does not count); the **teacher** once a `node-handoff` marker exists and no `planner-wake` marker follows the latest one; the **planner** otherwise. A successful `probe_done` also queues a handoff steer that wakes the planner's first turn.
 
-Practice uses the same turn/persistence/recovery path, not a separate problem-set service. [`tools/practice.ts`](../src/agent/tools/practice.ts) commits a statement and solution with `problem`; `conclude` records the outcome and reveals that solution. A turn-scoped gate enforces one active problem. The post-conclusion pause is doctrine, not a terminating `conclude` result. Next adds an explicit marker. Practice outcomes are session evidence, not graph mastery; ordinary practice settlement skips extraction.
+The plan is nodes made of facts. [`plan_batch`](../src/agent/tools/plan.ts) takes one to four nodes, each with one to eight facts (`id`, `name`, `statement`, optional `existing` graph id) and `requires` edges to earlier nodes, plus arrows (premises ⇒ conclusion) between facts. It validates the whole call before writing anything and lists every problem. Until the plan is accepted, each call replaces the stored tree, and the replaced plan's newly minted facts that carry no evidence leave the graph; afterwards each call appends a numbered batch (`origin: "planner"`), and existing nodes cannot change. Facts and arrows are written to the knowledge graph at plan time ([`writePlannedFacts`](../src/core/graph.ts), then layout settlement) whatever the graph settings switch says, and each stored fact keeps its graph id. The planner asks no questions; a typed reply while it is selected is an ordinary message, which its prompt treats as a change request.
+
+A `plan-accept` input ([`input-events.ts`](../src/core/input-events.ts)) accepts the plan. It is refused unless the session is a teaching session, the planner is selected, a stored plan exists and no question is open. It appends, write-ahead, a `node-handoff` marker for the first unpassed node whose prerequisite nodes have passed, filled from the fixed START template for the plan's first handoff and CONTINUE afterwards ([`contracts/handoff.ts`](../src/core/contracts/handoff.ts)). The teacher is selected from then on.
+
+The teacher has no plan tool. Its `quiz`/`explain` must name the current node (the latest handoff's) and one or more of that node's fact ids in `facts`; the prober's `probe`/`recall` must tag facts from the session's probe fact list once one exists. The app, not the teacher, finishes a node: after each answer the advance rule ([`plan-progress.ts`](../src/core/plan-progress.ts)) keeps the current node until all its facts pass ([evidence](#evidence-and-the-knowledge-number)), then appends a CONTINUE `node-handoff` for the next ready node, or a `planner-wake` carrying the planner brief when at most one node of the whole tree is still unpassed or no node is ready. The woken planner appends the next stretch with `plan_batch`, and the learner accepts it with another `plan-accept`.
+
+Displayed teaching still begins at the first node-tagged `quiz`/`explain` call ([`phases.ts`](../src/core/phases.ts)), not at a handoff. Current/visited plan positions derive from tagged calls, not grades. Clients read the plan from the latest plan tool result or `plan-update` marker.
+
+Practice uses the same turn/persistence/recovery path, not a separate problem-set service. [`tools/practice.ts`](../src/agent/tools/practice.ts) commits a statement and solution with `problem`; `conclude` records the outcome and reveals that solution. A turn-scoped gate enforces one active problem. The post-conclusion pause is doctrine, not a terminating `conclude` result. Next adds an explicit marker. Practice outcomes are session evidence, not graph mastery; they write no evidence-ledger events.
+
+### The coach
+
+The coach (code name `mentor`; "coach" in code already names the build coach) is a silent reviewer of learner answers in teaching sessions ([`server/mentor.ts`](../src/server/mentor.ts), [`subagents/mentor.ts`](../src/agent/subagents/mentor.ts)). It never addresses the learner.
+
+It runs once per qualifying answer: a builtin question's or plugin teach question's answer that the request saves while the prober or teacher is selected, that is not a dismissal, and whose turn proceeds. It does not run on steers, `continue`, retries, a sibling answer that leaves another question open, or in practice or build sessions. The request claims the chat through a turn preparation before the review (other requests get **409**; the abort route reaches the review), and the agent turn waits for it.
+
+The review is one awaited model call on the session's own conversation engine, outside the shared worker-request pool. Its instructions are `prompts/mentor/` with Settings overrides applied. The app builds its input from the record: goal, probe assessment, the probe fact list or the plan with numbers, the road record of earlier nodes, up to 12 lexically related propositions from other sessions, the current probe's or node's learner-visible conversation (the most recent 12,000 characters), and the latest answer with the app's verdict. Its only deliverable is one validated `review` call: `notes` (at most three kept), and optionally `judged` verdicts for own-words answers, `addFacts`, `addArrows`, `addNodes` (teaching only) and `askLearner`. Validation problems return to the model as a retryable tool error, up to three model calls per run; a run that never submits or throws is retried once, then counts as no review.
+
+The app applies the review deterministically ([`mentor-apply.ts`](../src/core/mentor-apply.ts)):
+
+- `judged` becomes evidence only for `explain`/`recall` answers and only for facts the question tagged.
+- In the probe, added facts and arrows join the session's probe fact list. While teaching, added facts join the current node, arrows join the tree, and added nodes are inserted before the current node as its prerequisites (`origin: "coach"`). A structural result that fails tree validation drops every structural addition; verdicts and notes stand.
+- New facts and arrows are written to the knowledge graph; a changed tree is saved and announced with a `plan-update` marker carrying the full tree.
+- A `coach-card` marker always follows, even with no review: the current node's or probe list's facts with the app's numbers and misconception flags, plus the review's notes and question.
+- Inserted nodes produce a CONTINUE `node-handoff` to the next node to teach; otherwise the ordinary advance rule decides.
+
+The markers are hidden from the learner's transcript, land after the answer's tool result and are saved write-ahead before the agent is built; if the record changed during the review they are dropped. Usage is recorded per model call against the card. `mentor-changed` brackets the model call; chat GET and list payloads carry a `coaching` flag while it runs. `handleChatInput` accepts an injected runner as its test seam; under `NODE_ENV=test` without one, no model call is made and the card and advance still happen. A failed review yields a card without notes and the turn proceeds; an aborted review ends the request without markers or an agent turn, leaving the answer and its evidence saved.
+
+### Evidence and the knowledge number
+
+`graph/evidence.jsonl` is an append-only ledger of graded learner answers, one `EvidenceEvent` per tagged fact: graph node id, chat, answer message id, time, source (`probe`, `quiz`, `code`, `recall`), `correct`, optional `dontKnow`, the guess probability, and optional self-reported confidence. It is an additive file without a graph format bump; a missing file reads as empty, and invalid lines are skipped. It persists across sessions.
+
+The server stamps evidence after the answer is saved, in the same request, independently of `graph.enabled` ([`evidence.ts`](../src/core/evidence.ts)). Multiple-choice correctness is re-derived from the posed call's committed `correctAnswer` against the selected values; the client's verdict is not used. A coding question counts only when the Coding questions plugin's grading reports passed or failed. Own-words answers get evidence only through the coach's verdicts; `ask_user_question` and dismissed answers get none. Stamping is idempotent per chat, message and node, so re-posted answers add nothing.
+
+The number is the probability that the learner knows a fact, folded from its events in time order by Bayesian knowledge tracing ([`knowledge.ts`](../src/core/knowledge.ts)): prior 0.30, slip 0.10, guess 1/n for single-select multiple choice and 1/(2ⁿ−1) for multi-select (clamped to 0.01–0.5), 0.05 for passed or failed code, 0.10 for coach-judged own words. "I don't know" counts as wrong. A fact carries a misconception flag while its latest answer is wrong (not "I don't know") with confidence of at least 90. A node passes when it has facts and each is at or above 0.85. The number is never stored: handoffs, cards, the planner brief and [`graphSnapshot.knowledge`](../src/core/graph.ts) recompute it on read.
+
+Deleting a proposition removes its evidence rows. Deleting sessions with their graph contributions removes the rows of nodes that die and keeps rows about surviving nodes, including those the deleted sessions wrote; preserving the graph keeps all evidence.
+
+### Fresh context
+
+The teacher's model context starts at the latest `node-handoff` marker, and the planner's at a `planner-wake` that is later than the latest handoff (its first planning reads the full record). [`toLlmMessages`](../src/core/native-messages.ts) renders from that marker with its text first; nothing earlier reaches the model, a compaction that summarised pre-boundary history is ignored, and tool results whose calls lie before the boundary are dropped. The prober, practitioner and build coach read the full record, as do the learner's view, side questions and the coach's probe-phase input. Context accounting treats the next agent's boundary as a reset like a compaction marker: usage anchors, measured context and CLI windows stop there, token estimates use the boundary-aware projection, and compaction never cuts before it.
+
+### Sessions created before the planner
+
+A teaching record whose transcript holds a `plan_init` call ([`isLegacyTeachRecord`](../src/core/native-messages.ts)) predates the planner and coach. It stays readable, but [`handleChatInput`](../src/server/chat-handler.ts) refuses every input on it with **410** and `{error, code: "legacySession"}`, before reconciliation, write-ahead save or liveness. Its saved `plan_init` plan still displays.
 
 ### Build branches
 
@@ -109,7 +155,7 @@ This is single-process coordination over JSON files, not a transactional queue o
 
 One process-global FIFO gate limits background **model request streams**, releasing each permit when the request ends, before tools or child waits—not after a whole agent finishes. Settings → Agent → Models → **Concurrent worker requests** (`agent.workerRequestConcurrency`) defaults to **8**, including when unset. Any positive safely representable whole integer is accepted without an arbitrary cap; invalid values are rejected, not clamped. A live increase drains queued requests immediately up to the limit; a decrease lets active requests finish and admits another only when the active count is below the new limit. Queued cancellation prevents provider dispatch.
 
-Core extractor/auditor/research/demo/visual/PDF requests and all detached `ctx.workers` tasks share the pool, even user-initiated tasks. Direct teacher/prober/practice requests and their compaction, interactive plugin-managed conversations and standalone raw plugin inference are excluded. `purpose` governs subscription consent, not worker classification. Routes and windows share a pool within one app-server process, never across independent server processes. Source-serial extraction chunks, the audit-through-merge consistency lock and the frontend three-file upload queue remain independent of this gate. See the [plugin host work/recovery map](plugin-architecture.md#inference-persistent-work-and-recovery).
+Core extractor/auditor/research/demo/visual/PDF requests and all detached `ctx.workers` tasks share the pool, even user-initiated tasks. Direct prober/planner/teacher/practice/build requests and their compaction, the coach's review, interactive plugin-managed conversations and standalone raw plugin inference are excluded. `purpose` governs subscription consent, not worker classification. Routes and windows share a pool within one app-server process, never across independent server processes. Source-serial extraction chunks, the audit-through-merge consistency lock and the frontend three-file upload queue remain independent of this gate. See the [plugin host work/recovery map](plugin-architecture.md#inference-persistent-work-and-recovery).
 
 ### Learner-image snapshots
 
@@ -119,18 +165,22 @@ Core extractor/auditor/research/demo/visual/PDF requests and all detached `ctx.w
 
 ## Knowledge graph and imports
 
-The graph records objective propositions and jointly-entailing reasoning chains, not learner understanding levels. Construction is post-hoc and independent of the lesson plan:
+The graph records objective propositions and jointly-entailing reasoning chains. Learner knowledge is not stored on them: it is a number derived from the separate [evidence ledger](#evidence-and-the-knowledge-number). Two writers construct the graph. The extraction pipeline turns imported notes, and a session's prose on manual request, into propositions after the fact. In teaching sessions the planner's `plan_batch` and the coach's additions write facts and arrows directly through [`writePlannedFacts`](../src/core/graph.ts), with chat-level provenance:
 
 ```mermaid
 flowchart LR
-    SOURCE[Teacher prose or imported notes] --> EXTRACT[Extractor]
+    SOURCE[Imported notes or manual session extraction] --> EXTRACT[Extractor]
     EXTRACT --> AUDIT[Identity auditor]
     AUDIT --> MERGE[Deterministic merge and simplification]
     MERGE --> LEDGERS[Graph and coverage ledgers]
+    PLAN[Planner and coach facts] --> WRITE[writePlannedFacts]
+    WRITE --> LEDGERS
     LEDGERS --> VIEW[Canvas and chains view]
 ```
 
-[`coverage.ts`](../src/core/coverage.ts) fingerprints teacher prose, including successful `send_to_user` text, by actual message ID. Learner text, thinking, questions, other tool results, and markers do not count. Automatic extraction is gated by `graph.enabled` and an uncovered-token threshold (default **4096**, minimum **500**). Rendering is a separate switch. Manual extraction/import routes do not themselves check the automatic-extraction switch.
+Automatic extraction after a turn no longer runs for chat sessions of any kind; a teaching session's facts come from its planner and coach. `writePlannedFacts` validates the whole write first, links facts with an `existing` id to that node instead of minting one, reuses an existing chain for the same premises and conclusion, and skips the merger's whole-ledger simplification and coverage checkpoints; its callers settle the layout afterwards.
+
+[`coverage.ts`](../src/core/coverage.ts) fingerprints teacher prose, including successful `send_to_user` text, by actual message ID. Learner text, thinking, questions, other tool results, and markers do not count. The manual session-extraction route (`POST /api/graph/coverage/extract`) and imports do not check `graph.enabled`; rendering is a separate switch.
 
 The pipeline batches oldest uncovered messages without splitting one message. Trigger and batch budgets are distinct: current app wiring does not inject the configurable trigger value as the batch budget. Each source's batches run serially; cross-source work can overlap under the shared request-level admission gate. A process-wide FIFO lock serializes audit through merge. These registries survive module entries through `globalThis`, not separate server processes.
 
@@ -148,11 +198,11 @@ Deleting sources removes their graph contributions while preserving knowledge su
 
 ### Read model and other writers
 
-[`graphSnapshot`](../src/core/graph.ts) derives the presentation without starting extraction. Single-premise arguments draw direct arrows; joint premises produce geometry junctions, not extra stored propositions. Clusters derive from birth-source provenance, not embeddings, Louvain, or LLM naming. Layout/render settings are server-persisted; camera state is device-local.
+[`graphSnapshot`](../src/core/graph.ts) derives the presentation without starting extraction. Single-premise arguments draw direct arrows; joint premises produce geometry junctions, not extra stored propositions. Clusters derive from birth-source provenance, not embeddings, Louvain, or LLM naming. Its `knowledge` side map gives the derived number and attempt count for each live proposition with evidence. Layout/render settings are server-persisted; camera state is device-local.
 
-Prober/practice graph tools require both graph and graph-tool switches; the teacher has no graph-reader registry. Explicit graph selections at session creation are a separate context path, not automatic semantic top-K injection.
+Prober/practice graph tools require both graph and graph-tool switches; the planner and teacher have no graph-reader registry. Explicit graph selections at session creation are a separate context path, not automatic semantic top-K injection.
 
-Extraction is the construction writer, not the only mutation: source/session/node deletion, simplification, and position commits also write graph files. Deleting a proposition removes chains using it; preserving graph on session deletion retains provenance while removing extraction bookkeeping.
+Extraction and `writePlannedFacts` are the construction writers, not the only mutations: source/session/node deletion, replaced unaccepted plans, simplification, and position commits also write graph files. Deleting a proposition removes chains using it; preserving graph on session deletion retains provenance while removing extraction bookkeeping.
 
 ## Storage and notifications
 
@@ -160,9 +210,10 @@ Extraction is the construction writer, not the only mutation: source/session/nod
 
 | Data | Files |
 | --- | --- |
-| Conversations, plans, usage, image snapshots, side questions | `chats/*.json` |
+| Conversations, plans, probe fact lists, usage, image snapshots, side questions | `chats/*.json` |
 | Worker computation and delivery obligations | `jobs/*.json` |
 | Propositions, chains, checkpoints, coverage | `graph/{nodes,chains,sessions,coverage}.jsonl` |
+| Graded learner answers per fact | `graph/evidence.jsonl` |
 | Sources, organization, positions, render preferences | JSON maps under `graph/` |
 | Preferences and prompt overrides | `settings.json`, `prompts/` |
 | Core plugin writable records | `core-plugin-data/<id>/` |
@@ -211,4 +262,4 @@ Native and plugin dialogs, anchored popups and page surfaces share [`interaction
 
 ## Verification starting points
 
-Tests use injected engines/ports, fake transports, and renderer seams. Start with `chat-flow`, `session-core`, `turn-recovery`, `job-delivery-recovery`, `extraction`, `notes-import-route`, `practice-flow`, `prompt-overrides`, `golden-fixtures`, and `plugin-*` under `tests/`. Fixture checks establish their exercised contracts, not live account entitlements, teaching quality, or cross-process durability. Commands and runtime prerequisites belong in [Development](development.md#checks). Historical plugin verification records live in the [archive](archive/plugin-implementation-history.md), not the current runtime contract.
+Tests use injected engines/ports, fake transports, and renderer seams. Start with `chat-flow`, `planner-flow`, `plan-batch`, `plan-accept`, `advance-flow`, `mentor-flow`, `evidence`, `knowledge`, `session-core`, `turn-recovery`, `job-delivery-recovery`, `extraction`, `notes-import-route`, `practice-flow`, `prompt-overrides`, `golden-fixtures`, and `plugin-*` under `tests/`. Fixture checks establish their exercised contracts, not live account entitlements, teaching quality, or cross-process durability. Commands and runtime prerequisites belong in [Development](development.md#checks). Historical plugin verification records live in the [archive](archive/plugin-implementation-history.md), not the current runtime contract.

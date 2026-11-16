@@ -443,6 +443,27 @@ describe("sectionedSegments — actual per-agent prompt membership", () => {
 		assert.equal(sectionedSegments({ teacher: [], prober: [], practice: [fragment] }).at(-1)!.segments[0]!.usageHint, "Used by Practice");
 	});
 
+	it("the Planner joins after the Prober when the API reports it; its shared chunks count toward usage", () => {
+		const planner = [
+			{ path: "system-prompt.md", sourceText: "b", overrideText: null, enabled: false, shared: true },
+			{ path: "planner/10-plan.md", sourceText: "pl", overrideText: null, enabled: false, shared: false },
+		];
+		const sections = sectionedSegments({ ...view, planner });
+		assert.deepEqual(sections.map((s) => s.id), ["teacher", "prober", "planner", "practice", "shared"]);
+		assert.equal(sections[2]!.label, "Planner");
+		assert.deepEqual(sections[2]!.segments.map((s) => s.path), ["planner/10-plan.md"]);
+		assert.equal(sections.at(-1)!.segments[0]!.usageHint, "Used by Teacher, Prober and Planner");
+	});
+
+	it("the Coach (the mentor) joins after the Planner when the API reports it, with its own fragment only", () => {
+		const planner = [{ path: "planner/10-plan.md", sourceText: "pl", overrideText: null, enabled: false, shared: false }];
+		const mentor = [{ path: "mentor/00-base.md", sourceText: "co", overrideText: null, enabled: false, shared: false }];
+		const sections = sectionedSegments({ ...view, planner, mentor });
+		assert.deepEqual(sections.map((s) => s.id), ["teacher", "prober", "planner", "mentor", "practice", "shared"]);
+		assert.equal(sections[3]!.label, "Coach");
+		assert.deepEqual(sections[3]!.segments.map((s) => s.path), ["mentor/00-base.md"]);
+	});
+
 	it("the indicator copy is pinned — it states WHICH VERSION IS IN USE (refined 2026-09-26)", () => {
 		assert.equal(PROMPT_IN_USE_HINT, "Your version is in use");
 	});

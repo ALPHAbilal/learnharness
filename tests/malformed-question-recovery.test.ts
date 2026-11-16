@@ -28,8 +28,8 @@ const { projectView } = await import("../src/core/view.ts");
 const { parseQuestionInput } = await import("../src/core/tool-parts.ts");
 const { inputAppends, parseChatInput, questionRecoveryAppends, endsInFailedTurn } = await import("../src/core/input-events.ts");
 
-const valid = { type: "check", nodeId: "fixture", question: "Which is even?", options: [{ label: "2", value: "a" }, { label: "3", value: "b" }], correctAnswer: "a", explanation: "2 is divisible by 2." };
-const partial = { type: "check", nodeId: "fixture", question: "What follows from $\\frac" };
+const valid = { type: "check", nodeId: "fixture", facts: ["f-fixture"], question: "Which is even?", options: [{ label: "2", value: "a" }, { label: "3", value: "b" }], correctAnswer: "a", explanation: "2 is divisible by 2." };
+const partial = { type: "check", nodeId: "fixture", facts: ["f-fixture"], question: "What follows from $\\frac" };
 function assistant(input: unknown = partial, stopReason = "toolUse", id = "fixture-assistant", callId = "bad", tool = "quiz"): AssistantMessage & { id: string } {
 	return { ...fauxAssistantMessage([fauxToolCall(tool, input as JsonObject, { id: callId })], { stopReason: stopReason as AssistantMessage["stopReason"] }), id };
 }
@@ -102,7 +102,7 @@ test("actual compatible adapter EOF → loop → settlement retains failure but 
 for (const tool of ["quiz", "probe", "ask_user_question", "explain", "recall"]) {
 	test(`${tool}: accepted boundary normalization remains displayable without changing the record`, async () => {
 		const raw = tool === "ask_user_question" ? { question: "Goal?", options: JSON.stringify(valid.options) }
-			: tool === "explain" || tool === "recall" ? { type: '\"check\"', nodeId: "fixture", question: "Explain parity", correctAnswer: "Even numbers are divisible by two." }
+			: tool === "explain" || tool === "recall" ? { type: '\"check\"', nodeId: "fixture", facts: ["f-fixture"], question: "Explain parity", correctAnswer: "Even numbers are divisible by two." }
 			: { ...valid, options: JSON.stringify(valid.options) };
 		assert.ok(parseQuestionInput(tool, raw));
 		if (tool !== "ask_user_question" && tool !== "quiz") return; // production registries covered by existing question-tool tests

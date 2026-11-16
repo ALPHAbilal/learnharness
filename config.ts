@@ -71,6 +71,9 @@ export const LEDGER_FILES = {
 	 *  the checkpoint's replacement for chat extractions — notes keep
 	 *  sessions.jsonl, whole-file as they are). */
 	coverage: path.join(/* turbopackIgnore: true */ PATHS.graph, "coverage.jsonl"),
+	/** Graded learner answers about facts (contracts/graph.ts
+	 *  EvidenceEvent; coach-planner design §4.3). Additive, append-only. */
+	evidence: path.join(/* turbopackIgnore: true */ PATHS.graph, "evidence.jsonl"),
 } as const;
 
 /**

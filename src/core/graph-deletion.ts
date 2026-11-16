@@ -32,7 +32,8 @@
  *                   rows — and orphans die: a node
  *                   whose references all came from this chat disappears
  *                   entirely, pruned from the positions ledger too (dead
- *                   members would break cluster hulls).
+ *                   members would break cluster hulls), and its evidence
+ *                   rows die with it. Preserve-graph keeps all evidence.
  *
  * Shared nodes survive automatically (the ruling): a node lives iff ANY
  * surviving reference remains — a provenance point from another chat or
@@ -212,11 +213,18 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
 	stats.nodesRemoved = [...new Set(nodeLines.map((line) => line.id))].filter((id) => !live.has(id)).length;
 	stats.chainsRemoved = chainLines.length - outChains.length;
 
+	// Evidence (coach-planner design §4.3): a dead node's evidence rows die
+	// with it; evidence about surviving nodes stays. Rewritten only when
+	// rows actually drop (unchanged files keep their mtimes).
+	const evidenceLines = graphStore.readEvidence();
+	const outEvidence = evidenceLines.filter((row) => !deadNodes.has(row.nodeId));
+
 	graphStore.rewriteLedgers({
 		nodes: outNodes,
 		chains: outChains,
 		coverage,
 		checkpoints,
+		...(outEvidence.length !== evidenceLines.length ? { evidence: outEvidence } : {}),
 	});
 
 	// 4. Positions: prune dead nodes AND dead chains (an argument's derived
@@ -322,9 +330,13 @@ export function deleteNodeTraces(graphStore: GraphStore, nodeId: string): NodeDe
 	// Only the touched ledgers: the node's own lines always die (its file
 	// must move), everything else rewrites only when rows actually drop.
 	const outNodes = graphStore.readNodes().filter((line) => line.id !== nodeId);
+	// The node's evidence rows die with it (coach-planner design §4.3).
+	const evidenceLines = graphStore.readEvidence();
+	const outEvidence = evidenceLines.filter((row) => row.nodeId !== nodeId);
 	graphStore.rewriteLedgers({
 		nodes: outNodes,
 		...(outChains.length !== chainLines.length ? { chains: outChains } : {}),
+		...(outEvidence.length !== evidenceLines.length ? { evidence: outEvidence } : {}),
 	});
 
 	// The resting positions die with the node and every dead chain.

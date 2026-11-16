@@ -6,6 +6,7 @@ import {
 	type PluginQuestionGradingContext, type JsonValue,
 } from "../core/plugin-questions.ts";
 import { newMessageId } from "../core/native-messages.ts";
+import { withNormalizedFactTags } from "../core/question-core.ts";
 import { invalidInputResult, questionResult } from "./tool-execute.ts";
 
 /** Heterogeneous host registry: schemas are validated dynamically before these callbacks run.
@@ -42,8 +43,11 @@ export class PluginQuestionLedger {
 	private current?: Epoch;
 	readonly tools: AgentTool<any>[];
 
+	/** `teachTagProblems` checks a teach pose's tags against the LIVE record
+	 *  (node existence, the current node, the node's facts — coach-planner
+	 *  design §4.4); absent, every teach pose is refused. */
 	constructor(contributions: readonly NativePluginQuestionContribution[], private readonly chatId: string,
-		private readonly nodeExists?: (nodeId: string) => boolean) {
+		private readonly teachTagProblems?: (nodeId: string, facts: readonly string[] | undefined) => string[]) {
 		this.tools = contributions.map(contribution => {
 			const { definition, variant } = contribution;
 			const spec = definition[variant]!;
@@ -51,6 +55,9 @@ export class PluginQuestionLedger {
 			return {
 				name: spec.toolName, label: definition.label, description: spec.description,
 				parameters: createPluginQuestionParameters(definition, variant), executionMode: "sequential" as const,
+				// The fact-tag guard (bare string → one-item array; JSON-encoded
+				// array parsed), as on the builtin question tools.
+				...(variant === "teach" ? { prepareArguments: (args: unknown) => withNormalizedFactTags(args) } : {}),
 				execute: async (toolCallId: string, input: unknown, signal?: AbortSignal) => {
 					contribution.requireActive();
 					if (signal?.aborted || contribution.signal.aborted) throw new Error("Operation aborted");
@@ -59,8 +66,12 @@ export class PluginQuestionLedger {
 					this.validatedCalls.delete(input as object);
 					const accepted = validatePluginQuestionInput(definition, { chatId: this.chatId, variant, input });
 					if (!accepted.ok) return invalidInputResult(spec.toolName, accepted.problems);
-					if (variant === "teach" && (!accepted.value.nodeId || !this.nodeExists?.(accepted.value.nodeId)))
-						return invalidInputResult(spec.toolName, ["nodeId must identify a live node in this session's plan map."]);
+					if (variant === "teach") {
+						const tagProblems = !accepted.value.nodeId || !this.teachTagProblems
+							? ["nodeId must identify a live node in this session's plan map."]
+							: this.teachTagProblems(accepted.value.nodeId, accepted.value.facts);
+						if (tagProblems.length) return invalidInputResult(spec.toolName, tagProblems);
+					}
 					contribution.requireActive();
 					call.epoch.poses.set(call.index, { questionId: crypto.randomUUID(), input: accepted.value, contribution });
 					const ack = { ...questionResult(), details: {} };

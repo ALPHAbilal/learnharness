@@ -33,7 +33,7 @@ const { HostContentRootContext, HostRouteLifetimeContext, HostRouteLifetimeProvi
 const { SurfaceRegion, usePageSurfaceBoundary } = await import("../components/plugin-surfaces.tsx");
 
 const graph: GraphSnapshot = {
-	nodes: [], edges: [], logicalEdges: [], impLinks: [], nodeSessions: {}, clusters: [],
+	nodes: [], edges: [], logicalEdges: [], impLinks: [], nodeSessions: {}, knowledge: {}, clusters: [],
 	propositions: ["a", "b"].map((id) => ({ id, name: `Node ${id}`, statement: `Statement ${id}`, aliases: [], createdAt: "2026-10-01", provenance: [{ chatId: "chat", messageId: "message" }] })),
 	chains: [{ id: "chain", premises: ["a"], conclusion: "b", provenance: [], createdAt: "2026-10-01" }],
 	sessions: { chat: "Lesson" }, fileSources: {},

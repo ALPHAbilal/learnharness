@@ -8,24 +8,26 @@
  * mirror-layout rules are defined exactly once.
  *
  * Path grammar: "system-prompt.md" (the shared base), "shared/<fragment>"
- * (sources v1: fragments composed by BOTH agents), "prober/<fragment>" /
- * "teacher/<fragment>" — where <fragment> is numeric-prefixed + .md
- * (e.g. 20-teaching.md). POSIX-relative, no traversal, no nesting.
+ * (sources v1: fragments shared across agents), "<agent>/<fragment>" for
+ * prober, planner, teacher, practice, build and mentor — where <fragment> is numeric-prefixed + .md
+ * (e.g. 20-turn.md). POSIX-relative, no traversal, no nesting.
  */
 
-/** A prompt fragment: numeric order key + .md (e.g. 20-teaching.md). Nothing else loads. */
+/** A prompt fragment: numeric order key + .md (e.g. 20-turn.md). Nothing else loads. */
 export const FRAGMENT_RE = /^\d+-[\w.-]+\.md$/;
 
 /** Which agent's prompt directory to compose. */
 /** Practice (2026-10-04): composes ONLY its own directory — no shared
  *  teaching base, no shared fragments (the doctrine contradicts the
  *  teaching philosophy; its 00-base.md plays the base role). */
-export type PromptAgent = "prober" | "teacher" | "practice" | "build";
+/** The mentor (coach-planner design §4.5 — the learner's "Coach") is a
+ *  prompt agent but not a conversation agent: its directory composes alone. */
+export type PromptAgent = "prober" | "planner" | "teacher" | "practice" | "build" | "mentor";
 
 /** One segment of one agent's composed prompt. */
 export interface PromptSegmentInfo {
 	/** The override/store key — mirrors the source layout ("system-prompt.md",
-	 *  "shared/05-learner-files.md", "teacher/20-teaching.md"). Stable across
+	 *  "shared/30-learner-files.md", "teacher/20-turn.md"). Stable across
 	 *  agents: the base and shared/ fragments use the SAME path in both
 	 *  agents' lists. */
 	path: string;
@@ -44,7 +46,7 @@ export interface PromptSegmentInfo {
  *  CURRENT source segment list. */
 export function isValidSegmentPath(segmentPath: string): boolean {
 	if (segmentPath === "system-prompt.md") return true;
-	const m = /^(prober|teacher|practice|build|shared)\/([\w.-]+\.md)$/.exec(segmentPath);
+	const m = /^(prober|planner|teacher|practice|build|mentor|shared)\/([\w.-]+\.md)$/.exec(segmentPath);
 	if (!m || m[2] === undefined) return false;
 	return FRAGMENT_RE.test(m[2]);
 }

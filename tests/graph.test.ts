@@ -1146,3 +1146,133 @@ describe("deriveView (the argument's geometry)", () => {
 		assert.deepEqual(view.impLinks, [{ id: "arg_ab", premises: ["a", "b"], conclusion: "c" }]);
 	});
 });
+
+// ─── planned facts (coach-planner design §4.3) ───────────────────────────────
+
+import { writePlannedFacts } from "../src/core/graph.ts";
+
+describe("writePlannedFacts (the planner's and coach's graph write)", () => {
+	let seq = 0;
+	/** A unique synthetic chat id per test — the ledgers are shared files. */
+	const plannedChat = (): string => `chat_planned_${Date.now().toString(36)}_${seq++}`;
+	const fileBytes = (file: string): Buffer | null => (fs.existsSync(file) ? fs.readFileSync(file) : null);
+
+	it("mints new facts with chat-level provenance and turns arrows into chat-level chains", () => {
+		const chatId = plannedChat();
+		const { ids, chainIds } = writePlannedFacts(
+			chatId,
+			[
+				{ id: "f1", name: "Modules", statement: "A Python module is a file of definitions that other files can import." },
+				{ id: "f2", name: "Import", statement: "The import statement runs a module once and binds its name." },
+			],
+			[{ premises: ["f1"], conclusion: "f2" }],
+			graphDeps,
+		);
+		assert.deepEqual(Object.keys(ids), ["f1", "f2"]);
+		assert.match(ids.f1!, /^n_/);
+		assert.notEqual(ids.f1, ids.f2);
+		const graph = scopedGraph([chatId]);
+		const f1 = graph.nodes.find((n) => n.id === ids.f1)!;
+		assert.equal(f1.name, "Modules");
+		assert.deepEqual(f1.provenance, [{ chatId, messageId: "" }]);
+		assert.deepEqual(f1.aliases, []);
+		assert.equal(graph.chains.length, 1);
+		assert.match(chainIds[0]!, /^arg_/);
+		assert.deepEqual(chainIds, [graph.chains[0]!.id]);
+		assert.deepEqual(graph.chains[0]!.premises, [ids.f1]);
+		assert.equal(graph.chains[0]!.conclusion, ids.f2);
+		assert.deepEqual(graph.chains[0]!.provenance, [{ chatId, messageId: "" }]);
+	});
+
+	it("links a fact with `existing` exactly like a linkTo verdict — no new node", () => {
+		const owner = plannedChat();
+		const { ids: first } = writePlannedFacts(owner, [{ id: "f1", name: "Closure", statement: "A closure keeps the variables of its defining scope alive." }], [], graphDeps);
+		const chatId = plannedChat();
+		const nodesBefore = new Set(graphStore.readNodes().map((n) => n.id)).size;
+		const { ids } = writePlannedFacts(chatId, [{ id: "c7", name: "Closures", statement: "Inner functions remember enclosing variables.", existing: first.f1 }], [], graphDeps);
+		assert.deepEqual(ids, { c7: first.f1 });
+		assert.equal(new Set(graphStore.readNodes().map((n) => n.id)).size, nodesBefore, "no node minted");
+		const linkLine = graphStore.readNodes().filter((n) => n.id === first.f1).at(-1)!;
+		assert.deepEqual(linkLine.provenance, [{ chatId, messageId: "" }], "the link line carries this chat's provenance");
+		assert.equal(linkLine.name, "Closures");
+		const merged = getGraph(graphStore).nodes.find((n) => n.id === first.f1)!;
+		assert.equal(merged.name, "Closure", "the first line still defines the node");
+		assert.ok(merged.aliases.includes("Inner functions remember enclosing variables."), "the planner's phrasing joins the aliases");
+		assert.deepEqual(merged.provenance.map((pt) => pt.chatId), [owner, chatId], "provenance unions");
+	});
+
+	it("an `existing` id that is not a live node throws, naming it, and writes nothing", () => {
+		const chatId = plannedChat();
+		const nodes = graphStore.readNodes().length;
+		const chains = graphStore.readChains().length;
+		assert.throws(
+			() => writePlannedFacts(chatId, [{ id: "f1", name: "Fresh", statement: "A fresh fact." }, { id: "f2", name: "Ghost", statement: "Ghost.", existing: "n_doesnotexist" }], [{ premises: ["f1"], conclusion: "f2" }], graphDeps),
+			/Fact "f2" names existing node "n_doesnotexist", which is not in the knowledge graph/,
+		);
+		assert.equal(graphStore.readNodes().length, nodes, "validation runs before any append");
+		assert.equal(graphStore.readChains().length, chains);
+	});
+
+	it("rejects unresolvable arrow endpoints and duplicate slugs before writing", () => {
+		const chatId = plannedChat();
+		const nodes = graphStore.readNodes().length;
+		assert.throws(
+			() => writePlannedFacts(chatId, [{ id: "f1", name: "One", statement: "One." }], [{ premises: ["f1"], conclusion: "f9" }], graphDeps),
+			/Arrow endpoint "f9" is neither a fact id of this batch nor a node in the knowledge graph/,
+		);
+		assert.throws(
+			() => writePlannedFacts(chatId, [{ id: "f1", name: "One", statement: "One." }, { id: "f1", name: "Two", statement: "Two." }], [], graphDeps),
+			/Duplicate fact id "f1"/,
+		);
+		assert.throws(() => writePlannedFacts(chatId, [{ id: "f1", name: "One", statement: "One." }, { id: "f2", name: "Two", statement: "Two." }], [{ premises: [], conclusion: "f2" }], graphDeps), /needs at least one premise/);
+		assert.equal(graphStore.readNodes().length, nodes);
+	});
+
+	it("resolves live n_ ids verbatim; skips an arrow this chat already asserted; reuses another chat's chain id", () => {
+		const other = plannedChat();
+		const { ids: base, chainIds: otherChains } = writePlannedFacts(
+			other,
+			[{ id: "a", name: "A", statement: "Planned A." }, { id: "b", name: "B", statement: "Planned B." }],
+			[{ premises: ["a"], conclusion: "b" }],
+			graphDeps,
+		);
+		const chatId = plannedChat();
+		const linesBefore = graphStore.readChains().length;
+		// Same argument through live ids (verbatim) — another chat asserted
+		// it, so this chat's assertion appends under the SAME arg_ id.
+		const first = writePlannedFacts(chatId, [], [{ premises: [base.a!], conclusion: base.b! }], graphDeps);
+		assert.deepEqual(first.chainIds, otherChains, "the identical key's chain id is reused");
+		assert.equal(graphStore.readChains().length, linesBefore + 1);
+		// Re-asserting from the same chat is skipped (no new line), but the id is still reported.
+		const again = writePlannedFacts(chatId, [], [{ premises: [base.a!], conclusion: base.b! }], graphDeps);
+		assert.deepEqual(again.chainIds, otherChains);
+		assert.equal(graphStore.readChains().length, linesBefore + 1, "already asserted by this chat — skipped");
+		const merged = getGraph(graphStore).chains.find((c) => c.id === otherChains[0])!;
+		assert.deepEqual(merged.provenance.map((pt) => pt.chatId), [other, chatId]);
+		// A slug and a live id mix in one arrow.
+		const mixed = writePlannedFacts(chatId, [{ id: "c", name: "C", statement: "Planned C." }], [{ premises: [base.b!, "c"], conclusion: base.a! }, { premises: ["c", base.b!], conclusion: base.a! }], graphDeps);
+		assert.equal(mixed.chainIds.length, 1, "the duplicate arrow inside one call collapses");
+		const chain = graphStore.readChains().find((c) => c.id === mixed.chainIds[0])!;
+		assert.deepEqual([...chain.premises].sort(), [base.b!, mixed.ids.c!].sort());
+		assert.equal(chain.conclusion, base.a);
+	});
+
+	it("leaves coverage and sessions ledgers untouched and runs no chain simplification", () => {
+		const foreign = plannedChat();
+		const { ids } = writePlannedFacts(
+			foreign,
+			[{ id: "a", name: "A", statement: "Simplify A." }, { id: "b", name: "B", statement: "Simplify B." }, { id: "x", name: "X", statement: "Simplify X." }],
+			[{ premises: ["a"], conclusion: "x" }, { premises: ["a", "b"], conclusion: "x" }],
+			graphDeps,
+		);
+		const redundantKey = (c: GraphChain) => c.conclusion === ids.x && c.premises.length === 2;
+		assert.ok(graphStore.readChains().some(redundantKey), "the redundant chain was written (no simplification inside)");
+		const coverage = fileBytes(LEDGER_FILES.coverage);
+		const sessions = fileBytes(LEDGER_FILES.sessions);
+		const chatId = plannedChat();
+		writePlannedFacts(chatId, [{ id: "y", name: "Y", statement: "Simplify Y." }], [{ premises: [ids.x!], conclusion: "y" }], graphDeps);
+		assert.deepEqual(fileBytes(LEDGER_FILES.coverage), coverage, "no coverage rows");
+		assert.deepEqual(fileBytes(LEDGER_FILES.sessions), sessions, "no sessions.jsonl checkpoint");
+		assert.ok(graphStore.readChains().some(redundantKey), "the whole-ledger simplifyChains pass did not run");
+	});
+});

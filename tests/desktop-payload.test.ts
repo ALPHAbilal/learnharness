@@ -63,9 +63,13 @@ function withPayload(test: (fixture: {
 		write(path.join(".next", "static", "runtime.js"));
 		write(path.join("public", "asset.txt"));
 		write(path.join(STANDALONE, PROMPT));
-		write(path.join(STANDALONE, "src", "agent", "prompts", "teacher", "20-teaching.md"));
+		write(path.join(STANDALONE, "src", "agent", "prompts", "teacher", "20-turn.md"));
 		write(path.join(STANDALONE, "src", "agent", "prompts", "side-chat", "00-base.md"));
 		write(path.join(STANDALONE, "src", "agent", "prompts", "side-chat", "90-style.md"));
+		write(path.join(STANDALONE, "src", "agent", "prompts", "build", "00-base.md"));
+		write(path.join(STANDALONE, "src", "agent", "prompts", "build", "10-doctrine.md"));
+		write(path.join(STANDALONE, "src", "agent", "prompts", "planner", "10-plan.md"));
+		write(path.join(STANDALONE, "src", "agent", "prompts", "mentor", "00-base.md"));
 		test({ root, write, run: () => spawnSync(process.execPath, [path.join(root, "scripts", "build-server.mjs")], {
 			cwd: root, encoding: "utf8", timeout: 10_000,
 		}) });

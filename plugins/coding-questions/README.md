@@ -48,7 +48,8 @@ plugin. App packaging is a separate host operation.
 
 The plugin contributes `coding_question` only to the **teacher**, not the prober or
 practice agent. Practice agents separately receive `coding_problem` (see below). The native tool receives the host's `question`, `type`
-(`predict`/`check`), `nodeId`, and this payload:
+(`predict`/`check`), `nodeId`, `facts` (the ids of the plan facts the question tests;
+required by the host whenever the node has facts), and this payload:
 
 ```ts
 {

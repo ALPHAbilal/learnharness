@@ -17,6 +17,39 @@ export interface PlanNode {
 	title: string;
 	/** 1-2 sentences: what this node covers. */
 	summary?: string;
+	/** The facts the learner must show to pass this node (coach-planner
+	 *  design §4.2). Optional: trees saved before facts existed still parse. */
+	facts?: PlanFact[];
+	/** Who added the node: the planner's batches or the coach's
+	 *  insertions. Absent on older trees. */
+	origin?: "planner" | "coach";
+	/** The planner batch the node belongs to (1, 2, …). A node without a
+	 *  batch counts as batch 0. */
+	batch?: number;
+}
+
+/** One fact of a plan node: a knowledge-graph proposition the learner
+ *  must show they know. */
+export interface PlanFact {
+	/** Session-scoped slug the model writes ("f7"), same slug grammar as
+	 *  node ids; unique across the whole tree. Arrows reference it. */
+	id: string;
+	/** The knowledge-graph node id ("n_…") the fact is stored under. */
+	graphId: string;
+	/** The fact, stated as one true proposition. */
+	statement: string;
+	/** True when this plan minted the graph node (the planner gave no
+	 *  `existing` id); false or absent when the fact links to a node that
+	 *  already existed. A replaced, not-yet-accepted plan removes the
+	 *  minted nodes that carry no evidence. */
+	minted?: boolean;
+}
+
+/** An argument between facts: the premises jointly entail the conclusion
+ *  (the plan-side image of a graph chain). Endpoints are PlanFact ids. */
+export interface PlanArrow {
+	premises: string[];
+	conclusion: string;
 }
 
 export interface PlanEdge {
@@ -29,6 +62,8 @@ export interface PlanEdge {
 export interface PlanTree {
 	nodes: PlanNode[];
 	edges: PlanEdge[];
+	/** Arguments between the nodes' facts. Optional: older trees have none. */
+	arrows?: PlanArrow[];
 	/** Increments on every mutation — lets the UI animate/react to changes. */
 	version: number;
 }
@@ -123,6 +158,11 @@ export interface PlanToolResult {
 	tree?: PlanTree;
 }
 
+// ─── the node handoff text (coach-planner design §4.6) ───────────────────────
+
+// Moved to contracts/handoff.ts with the other handoff templates; re-exported
+// here so the old import path keeps working.
+export { nodeHandoffText, type NodeHandoffInput } from "./handoff.ts";
 
 // ─── the native fold (Wave D: derivePlanStatuses over LhMessage[]) ───────────
 

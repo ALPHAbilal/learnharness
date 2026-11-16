@@ -43,6 +43,7 @@ import { copyImmutableData, pendingPluginQuestionOf, pluginQuestionCallsOf } fro
 import { pluginQuestionOccurrenceKey, samePluginQuestionOccurrence, type PluginQuestionAnswerState, type PluginQuestionSnapshot, type PluginQuestionOccurrence } from "../src/core/index.ts";
 
 import type { PluginProblemSnapshot, PluginProblemSubmissionState } from "../src/core/index.ts";
+import type { LessonProgress } from "../src/core/index.ts";
 
 export interface PluginProblemAvailability { problemId: string; status: "available" | "unavailable" }
 export interface PluginProblemDraft { submission: PluginProblemSubmissionState; thinking: string }
@@ -55,6 +56,8 @@ export interface SessionRecordSnapshot {
 	turnInFlight?: boolean;
 	turns?: TurnUsage[];
 	pricing?: SessionPricing;
+	/** Derived lesson progress (coach-planner design §4.10). */
+	progress?: LessonProgress;
 }
 export interface SessionRecordReadOptions {
 	adoption?: "replace" | "append" | "none";

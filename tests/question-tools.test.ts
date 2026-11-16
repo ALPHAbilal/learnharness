@@ -17,19 +17,26 @@ import { after, describe, it } from "node:test";
 import { Value } from "typebox/value";
 import {
 	askUserQuestionTool,
+	createPlannerTools,
 	createProberTools,
 	createTeacherTools,
 	probeQuizTool,
 	probeExplainTool,
+	probeQuizExample,
+	probeQuizToolFor,
+	probeExplainToolFor,
 	quizExampleBody,
+	teachQuizExample,
 	teachExplainToolFor,
 	teachQuizToolFor,
 	type TeacherToolContext,
 } from "../src/agent/tools.ts";
 import { TOGGLEABLE_TOOLS } from "../src/core/pending.ts";
 import { jobStore } from "../src/store/jobs.ts";
+import { graphStore } from "../src/store/graph.ts";
 import { probeQuizInputSchema, quizInputObject, quizInputProblems } from "../src/core/question-core.ts";
 import { chatStore } from "../src/store/chats.ts";
+import { newNodeHandoffMessage, type LhMessage } from "../src/core/native-messages.ts";
 import { PATHS } from "../config.ts";
 
 const dataDir = path.join(PATHS.root, "data");
@@ -62,6 +69,7 @@ const validQuiz = {
 	explanation: "Arithmetic.",
 	type: "check",
 	nodeId: "arith",
+	facts: ["f-arith"],
 };
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -124,12 +132,12 @@ describe("teachQuizToolFor: the dynamic plan-nodeId validation (position signal)
 		assert.match(msg, /arith/);
 	});
 
-	it("no tree yet: ANY nodeId is rejected — quizzes wait for plan_init", async () => {
+	it("no tree yet: ANY nodeId is rejected — quizzes wait for the plan", async () => {
 		const chatId = newChat("NodeId: no tree");
 		const tool = teachQuizToolFor({ chatId, chatStore });
 		const res = await boundaryParse(tool, { ...validQuiz, nodeId: "anything" });
 		assert.equal(res.success, false);
-		assert.match(problemLines(res.error).at(-1)!, /No plan map exists yet — call plan_init/);
+		assert.match(problemLines(res.error).at(-1)!, /No plan map exists yet — quizzes wait for the plan/);
 	});
 
 	it("missing nodeId is rejected at the boundary (owner ruling 2026-09-26: no untagged quizzes)", async () => {
@@ -153,7 +161,7 @@ describe("teachQuizToolFor: the dynamic plan-nodeId validation (position signal)
 		);
 	});
 
-	it("reads the LIVE record — a plan_init mutation mid-turn is honored immediately", async () => {
+	it("reads the LIVE record — a plan mutation mid-turn is honored immediately", async () => {
 		const chatId = newChat("NodeId: live record");
 		const tool = teachQuizToolFor({ chatId, chatStore });
 
@@ -203,7 +211,7 @@ describe("the prober's quiz: no nodeId field at all", () => {
 		// Fix wave (2026-09-20): the owner ruling adds research + pdf dispatch
 		// to the probe phase's registry (demo/visual stay teach-only).
 		assert.deepEqual(Object.keys(tools).sort(), [
-			"ask_user_question", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "research",
+			"ask_user_question", "draw_map", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "reflect", "research",
 		]);
 		const probe = tools.probe as AgentTool<any>;
 		assert.equal(Value.Check(probe.parameters, { ...validQuiz, nodeId: "anything" }), true, "no session check to fail");
@@ -215,15 +223,15 @@ describe("quiz tool descriptions carry the complete, phase-correct example", () 
 	it("the canonical body is schema-valid and authoring-clean (never ship a broken exemplar)", () => {
 		assert.deepEqual(quizInputProblems(quizExampleBody), []);
 		assert.equal(Value.Check(probeQuizInputSchema, quizExampleBody), true);
-		const teachExample = { type: "check", nodeId: "chain-rule", ...quizExampleBody };
-		assert.equal(Value.Check(quizInputObject, teachExample), true);
+		assert.equal(Value.Check(quizInputObject, teachQuizExample), true);
+		assert.equal(Value.Check(probeQuizInputSchema, probeQuizExample), true);
 	});
 
 	it("probe: the serialized body rides the description with correct JSON escaping, no phase metadata", () => {
 		const desc = probeQuizTool.description;
 		assert.ok(
-			desc.includes("```json\n" + JSON.stringify(quizExampleBody, null, 2) + "\n```"),
-			"the example is the exact JSON.stringify of the canonical body",
+			desc.includes("```json\n" + JSON.stringify(probeQuizExample, null, 2) + "\n```"),
+			"the example is the exact JSON.stringify of the canonical body with its fact tags",
 		);
 		// The escaping exemplar must be VISIBLE as wire text — the runtime
 		// string carries literal double backslashes, exactly what the model
@@ -236,16 +244,15 @@ describe("quiz tool descriptions carry the complete, phase-correct example", () 
 	it("quiz: the required pair leads the example, with the plan-id caveat", () => {
 		const chatId = newChat("Teacher: description example");
 		const desc = teachQuizToolFor({ chatId, chatStore }).description;
-		const teachExample = { type: "check", nodeId: "chain-rule", ...quizExampleBody };
-		assert.ok(desc.includes("```json\n" + JSON.stringify(teachExample, null, 2) + "\n```"));
+		assert.ok(desc.includes("```json\n" + JSON.stringify(teachQuizExample, null, 2) + "\n```"));
 		// The 2026-10-09 drop-order ruling: type+nodeId LEAD the object —
 		// fields generated first get dropped least.
 		assert.ok(
-			/```json\n\{\n {2}"type": "check",\n {2}"nodeId": "chain-rule",/.test(desc),
-			"type and nodeId lead the serialized example",
+			/```json\n\{\n {2}"type": "check",\n {2}"nodeId": "chain-rule",\n {2}"facts": \[/.test(desc),
+			"type and nodeId lead the serialized example, facts right after",
 		);
 		assert.ok(
-			desc.includes("illustrative — copy an exact id from this session's plan_init"),
+			desc.includes("illustrative — copy an exact node id from this session's plan"),
 			"the illustrative-nodeId caveat",
 		);
 	});
@@ -267,22 +274,22 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 		const chatId = newChat("Prober: toggles");
 		const ctx = { chatId, chatStore, deliver: () => {}, jobStore, spawn: () => {} };
 		assert.deepEqual(Object.keys(createProberTools(ctx)).sort(), [
-			"ask_user_question", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "research",
+			"ask_user_question", "draw_map", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "reflect", "research",
 		]);
 
 		const noAsk = createProberTools(ctx, { ask_user_question: false });
-		assert.deepEqual(Object.keys(noAsk).sort(), ["find", "grep", "ls", "pdf", "probe", "probe_done", "read", "research"]);
+		assert.deepEqual(Object.keys(noAsk).sort(), ["draw_map", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "reflect", "research"]);
 
 		// Quizzing is mechanics-managed now (owner 2026-09-27): quiz/explain
 		// NEVER pass through the generic filter — hand-written quiz:false is a
 		// no-op (the wedge danger stands: a quiz-less prober collapses its
 		// assessment flow). probe_done is never droppable — it ends the phase.
 		const noQuiz = createProberTools(ctx, { quiz: false });
-		assert.deepEqual(Object.keys(noQuiz).sort(), ["ask_user_question", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "research"]);
+		assert.deepEqual(Object.keys(noQuiz).sort(), ["ask_user_question", "draw_map", "find", "grep", "ls", "pdf", "probe", "probe_done", "read", "reflect", "research"]);
 		// The mechanic switch (owner 2026-09-27): tools.explain === true arms
 		// free-recall — explain in, quiz out, exactly one quizzing tool.
 		const free = createProberTools(ctx, { explain: true });
-		assert.deepEqual(Object.keys(free).sort(), ["ask_user_question", "find", "grep", "ls", "pdf", "probe_done", "read", "recall", "research"]);
+		assert.deepEqual(Object.keys(free).sort(), ["ask_user_question", "draw_map", "find", "grep", "ls", "pdf", "probe_done", "read", "recall", "reflect", "research"]);
 		assert.ok(createProberTools(ctx, { probe_done: false }).probe_done, "probe_done always-on");
 	});
 
@@ -295,10 +302,10 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 			spawn: () => {},
 		};
 		const full = Object.keys(createTeacherTools(ctx)).sort();
-		assert.deepEqual(full, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "research", "show_image", "visual"]);
+		assert.deepEqual(full, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "quiz", "read", "research", "show_image", "visual"]);
 
 		const noResearch = Object.keys(createTeacherTools(ctx, { research: false })).sort();
-		assert.deepEqual(noResearch, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "plan_init", "quiz", "read", "show_image", "visual"]);
+		assert.deepEqual(noResearch, ["ask_user_question", "demo", "find", "grep", "ls", "pdf", "quiz", "read", "show_image", "visual"]);
 
 		// absent = enabled: an empty record and undefined behave identically
 		assert.deepEqual(
@@ -309,13 +316,26 @@ describe("tool toggles (core/pending.ts + factories)", () => {
 
 		// The mechanic switch (owner 2026-09-27): free-recall swaps the teach
 		// quiz for the teach explain — one quizzing tool, whichever is armed.
-		const freeFull = ["ask_user_question", "demo", "explain", "find", "grep", "ls", "pdf", "plan_init", "read", "research", "show_image", "visual"];
+		const freeFull = ["ask_user_question", "demo", "explain", "find", "grep", "ls", "pdf", "read", "research", "show_image", "visual"];
 		assert.deepEqual(Object.keys(createTeacherTools(ctx, { explain: true })).sort(), freeFull);
 		assert.deepEqual(
 			Object.keys(createTeacherTools(ctx, { explain: true, research: false })).sort(),
 			freeFull.filter((t) => t !== "research"),
 			"mechanics and plain toggles compose",
 		);
+		// The coach update: plan_init left the teacher (the plan is the
+		// planner's plan_batch); neither plan tool is a teacher tool.
+		assert.equal(full.includes("plan_init") || full.includes("plan_batch"), false);
+	});
+
+	it("createPlannerTools: plan_batch + learner files + research; no question tools; plan_batch always on", () => {
+		const chatId = newChat("Planner: toggles");
+		const ctx = { chatId, chatStore, graphStore, jobStore, spawn: () => {} };
+		const full = Object.keys(createPlannerTools(ctx)).sort();
+		assert.deepEqual(full, ["find", "grep", "ls", "plan_batch", "read", "research"]);
+		assert.deepEqual(Object.keys(createPlannerTools(ctx, { research: false })).sort(), ["find", "grep", "ls", "plan_batch", "read"]);
+		assert.deepEqual(Object.keys(createPlannerTools(ctx, { explain: true })).sort(), full, "quizzing mechanics never reach the planner");
+		assert.ok(createPlannerTools(ctx, { plan_batch: false }).plan_batch, "plan_batch always-on");
 	});
 });
 
@@ -362,6 +382,7 @@ describe("teachExplainToolFor: the explain variant validates nodeId like the qui
 		question: "Explain why the null result matters.",
 		correctAnswer: "It ruled out the aether — a stationary aether predicts a fringe shift, and none was seen.",
 		nodeId: "arith",
+		facts: ["f-arith"],
 		type: "check",
 	};
 
@@ -393,11 +414,11 @@ describe("teachExplainToolFor: the explain variant validates nodeId like the qui
 		assert.match(problemLines(res.error).join("\n"), /matches no node/);
 	});
 
-	it("no tree yet: rejected — checks wait for plan_init", async () => {
+	it("no tree yet: rejected — checks wait for the plan", async () => {
 		const chatId = newChat("Explain nodeId: no tree");
 		const res = await boundaryParse(teachExplainToolFor({ chatId, chatStore }), validExplain);
 		assert.equal(res.success, false);
-		assert.match(problemLines(res.error).at(-1)!, /No plan map exists yet — call plan_init/);
+		assert.match(problemLines(res.error).at(-1)!, /No plan map exists yet — quizzes wait for the plan/);
 	});
 
 	it("an empty commitment is rejected at the boundary", async () => {
@@ -471,5 +492,90 @@ describe("tool descriptions carry mechanics only, no question-craft", () => {
 		);
 		assert.ok(shared.includes("asymmetry"), "the option craft moved here, not deleted");
 		assert.ok(shared.includes("TRANSCRIBED SPEECH"), "the dictation-leniency note lives here");
+	});
+});
+
+// ─── fact tags (coach-planner design §4.4) ────────────────────────────────
+
+describe("fact tags on the graded question tools", () => {
+	const TREE = {
+		nodes: [
+			{ id: "arith", title: "Arithmetic", facts: [{ id: "f-add", graphId: "n_add", statement: "Adding." }, { id: "f-sub", graphId: "n_sub", statement: "Subtracting." }] },
+			{ id: "expressions", title: "Expressions", facts: [{ id: "f-expr", graphId: "n_expr", statement: "Expressions." }] },
+		],
+		edges: [{ from: "arith", to: "expressions" }],
+		version: 1,
+	};
+	function teachingChat(title: string, current = "arith"): string {
+		const chatId = newChat(title);
+		chatStore.saveTree(chatId, TREE);
+		chatStore.saveMessages(chatId, [newNodeHandoffMessage(current, "[Node handoff] x") as LhMessage]);
+		return chatId;
+	}
+
+	it("facts follows type and nodeId in both teach schemas and is required (min 1)", () => {
+		assert.deepEqual(Object.keys(quizInputObject.properties).slice(0, 3), ["type", "nodeId", "facts"]);
+		const { facts: _f, ...untagged } = validQuiz;
+		assert.equal(Value.Check(quizInputObject, untagged), false, "an untagged teach quiz fails the schema");
+		assert.equal(Value.Check(quizInputObject, { ...validQuiz, facts: [] }), false, "an empty list fails the schema");
+		assert.match((quizInputObject.properties.facts as unknown as { description: string }).description, /copy them exactly from the node handoff or the latest coach card/);
+	});
+
+	it("a bare string is wrapped and a JSON-encoded array parsed before validation", () => {
+		for (const tool of [probeQuizTool, probeExplainTool, teachQuizToolFor({ chatId: "chat_x", chatStore: undefined as never }), teachExplainToolFor({ chatId: "chat_x", chatStore: undefined as never })]) {
+			const prepare = (tool as unknown as { prepareArguments: (a: unknown) => unknown }).prepareArguments;
+			assert.deepEqual((prepare({ question: "q", facts: "f-add" }) as { facts: unknown }).facts, ["f-add"], `${tool.name} wraps`);
+			assert.deepEqual((prepare({ question: "q", facts: '["f-add","f-sub"]' }) as { facts: unknown }).facts, ["f-add", "f-sub"], `${tool.name} parses`);
+			const tagged = { question: "q", facts: ["f-add"] };
+			assert.equal(prepare(tagged), tagged, `${tool.name} leaves an array untouched`);
+		}
+	});
+
+	it("teacher: a nodeId other than the current node is rejected, naming the current node", async () => {
+		const chatId = teachingChat("Facts: not current");
+		const res = await boundaryParse(teachQuizToolFor({ chatId, chatStore }), { ...validQuiz, nodeId: "expressions", facts: ["f-expr"] });
+		assert.equal(res.success, false);
+		assert.deepEqual(problemLines(res.error), ['nodeId "expressions" is not the node you are teaching. The current node is "arith". Use it.']);
+	});
+
+	it("teacher: a fact id that is not the node's is rejected, listing the node's facts", async () => {
+		const chatId = teachingChat("Facts: foreign fact");
+		for (const tool of [teachQuizToolFor({ chatId, chatStore }), teachExplainToolFor({ chatId, chatStore })]) {
+			const input = tool.name === "quiz"
+				? { ...validQuiz, facts: ["f-add", "f-expr"] }
+				: { type: "check", nodeId: "arith", facts: ["f-add", "f-expr"], question: "Explain.", correctAnswer: "Because." };
+			const res = await boundaryParse(tool, input);
+			assert.equal(res.success, false, tool.name);
+			assert.deepEqual(problemLines(res.error), ['fact "f-expr" is not a fact of node "arith". This node\'s facts are: f-add, f-sub']);
+		}
+	});
+
+	it("teacher: the current node with its own facts is accepted", async () => {
+		const chatId = teachingChat("Facts: valid");
+		const res = await boundaryParse(teachQuizToolFor({ chatId, chatStore }), { ...validQuiz, facts: ["f-sub"] });
+		assert.equal(res.success, true);
+	});
+
+	it("teacher: before any node-handoff, today's node-existence check alone applies", async () => {
+		const chatId = newChat("Facts: no handoff");
+		chatStore.saveTree(chatId, TREE);
+		assert.equal((await boundaryParse(teachQuizToolFor({ chatId, chatStore }), { ...validQuiz, nodeId: "expressions", facts: ["anything"] })).success, true);
+	});
+
+	it("prober: before the goal question probe is refused; in the no-map fallback facts is ignored", async () => {
+		const chatId = newChat("Probe facts: none");
+		const probe = probeQuizToolFor({ chatId, chatStore });
+		const { type: _t, nodeId: _n, facts: _f, ...plain } = validQuiz;
+		assert.deepEqual(problemLines((await boundaryParse(probe, plain)).error), ["Ask the opening question first with ask_user_question."]);
+		chatStore.saveProbeFacts(chatId, { facts: [], arrows: [] });
+		assert.equal((await boundaryParse(probe, plain)).success, true);
+		assert.equal((await boundaryParse(probe, { ...plain, facts: ["whatever"] })).success, true);
+	});
+
+	it("the descriptions name the facts field", () => {
+		assert.ok(teachQuizToolFor({ chatId: "chat_x", chatStore: undefined as never }).description.includes("`facts` (required)"));
+		assert.ok(teachExplainToolFor({ chatId: "chat_x", chatStore: undefined as never }).description.includes("`facts` (required)"));
+		assert.ok(probeQuizTool.description.includes("`facts` to the id of the ONE fact"));
+		assert.ok(probeExplainTool.description.includes("`facts` to the id of the ONE fact"));
 	});
 });

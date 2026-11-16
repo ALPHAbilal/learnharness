@@ -129,9 +129,13 @@ export function ChainTableBody({
 	keyboardActive = true,
 	sourceInventoryPending = false,
 	pickerChrome = false,
+	knowledge,
 }: {
 	sourceInventoryPending?: boolean;
 	pickerChrome?: boolean;
+	/** The learner's knowledge number per proposition (GraphSnapshot
+	 *  .knowledge, coach-planner design §4.10): statement rows show it. */
+	knowledge?: Readonly<Record<string, { p: number; attempts: number }>>;
 	keyboardActive?: boolean;
 	directory?: SourceDirectory;
 	onOrganizationChange?: OrganizationChange;
@@ -555,7 +559,15 @@ export function ChainTableBody({
 															<span className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
 																{node.statement}
 															</span>
-															<TreeCell widthClassName="w-14" />
+															{/* The knowledge number (design §4.10) in the
+															    statement row's first free cell. */}
+															<TreeCell widthClassName="w-14" align="right" className="text-xs tabular-nums text-muted-foreground">
+																{knowledge?.[id] && (
+																	<span data-testid={`prop-known-${id}`} title="Known">
+																		{Math.round(knowledge[id]!.p * 100)}%
+																	</span>
+																)}
+															</TreeCell>
 															<TreeCell widthClassName="w-20" />
 														</div>
 													);
@@ -679,8 +691,11 @@ export function ChainTableOverlay({
 	keyboardActive = true,
 	registerInteraction = true,
 	pickerChrome = false,
+	knowledge,
 }: {
 	open: boolean;
+	/** The knowledge number per proposition (passed to the body). */
+	knowledge?: Readonly<Record<string, { p: number; attempts: number }>>;
 	/** Host knowledge picker has clearance, but no sidebar-reopen action. */
 	pickerChrome?: boolean;
 	/** A host knowledge picker registers once through its pane or modal shell. */
@@ -818,6 +833,7 @@ export function ChainTableOverlay({
 				{directoryFailure && <p role="alert" className="px-3 py-1 text-xs text-error">{directoryFailure}</p>}
 				<ChainTableBody
 					pickerChrome={pickerChrome}
+					knowledge={knowledge}
 					keyboardActive={keyboardActive && !deleteOpen}
 					directory={directory}
 					onOrganizationChange={directory ? changeOrganization : undefined}

@@ -9,8 +9,11 @@ import { validatePluginSubmissionImages, type PluginSubmissionImages } from "./p
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type PluginQuestionVariant = "probe" | "teach";
 export type PluginQuestionInput<Q = JsonValue> = { question: string; payload: Q } & (
-	| { type?: never; nodeId?: never }
-	| { type: "predict" | "check"; nodeId: string }
+	| { type?: never; nodeId?: never; facts?: never }
+	/** Teach: `facts` (coach-planner design §4.4) is optional in the schema so
+	 *  historical snapshots stay readable; the host requires it at pose time
+	 *  whenever the tagged node has facts. */
+	| { type: "predict" | "check"; nodeId: string; facts?: string[] }
 );
 export interface PluginQuestionValidationContext<Q = JsonValue> {
 	readonly chatId: string;
@@ -371,7 +374,14 @@ function buildParameters(schema: TSchema, variant: PluginQuestionVariant): TSche
 		type: "object", additionalProperties: false,
 		properties: {
 			question: { type: "string", pattern: "\\S" }, payload,
-			...(variant === "teach" ? { type: { type: "string", enum: ["predict", "check"] }, nodeId: { type: "string", pattern: "\\S" } } : {}),
+			// Teach `facts` stays OPTIONAL here: readAnnotation re-validates every
+			// historical snapshot against this schema, and a required field would
+			// make snapshots saved before it unreadable. Presence is enforced at
+			// pose time (PluginQuestionLedger.execute).
+			...(variant === "teach" ? {
+				type: { type: "string", enum: ["predict", "check"] }, nodeId: { type: "string", pattern: "\\S" },
+				facts: { type: "array", items: { type: "string" }, minItems: 1, description: "The ids of the fact(s) this question tests — copy them exactly from the node handoff or the latest coach card." },
+			} : {}),
 		},
 		required: variant === "teach" ? ["type", "nodeId", "question", "payload"] : ["question", "payload"],
 	};

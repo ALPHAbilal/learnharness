@@ -49,6 +49,18 @@ const PRACTICE_SHARED_FRAGMENTS = ["10-voice.md", "15-accuracy.md", "16-mental-m
  *  no such tools; its own base plays the base role. */
 const BUILD_SHARED_FRAGMENTS = ["10-voice.md", "15-accuracy.md", "35-side-conversations.md", "40-formatting.md"];
 
+/** Shared fragments the PLANNER composes (coach-planner design §4.8): the
+ *  voice and accuracy law, and the learner-file mechanics (it reads files
+ *  the learner points at). The question/confidence/thinking-field
+ *  mechanics stay out — the planner asks no questions. It keeps the shared
+ *  base (system-prompt.md) like the prober and teacher. */
+export const PLANNER_SHARED_FRAGMENTS = ["10-voice.md", "15-accuracy.md", "30-learner-files.md"];
+
+/** The MENTOR (coach-planner design §4.5 — the learner's "Coach") composes
+ *  its own directory only: no shared base and no shared fragments. It never
+ *  speaks to the learner; its instructions are its 00-base.md alone. */
+const MENTOR_SHARED_FRAGMENTS: string[] = [];
+
 /** Absolute path for an override file (unchecked — validate first). */
 function overrideFileFor(segmentPath: string): string {
 	return path.join(PROMPTS_OVERRIDE_DIR, ...segmentPath.split("/"));
@@ -78,7 +90,7 @@ export function listSourceSegments(agent: PromptAgent): Array<{ path: string; sh
 	// plays the base role), but the FORMATTING guide composes for every
 	// agent (owner, 2026-10-04 late): LaTeX delimiters and markdown apply
 	// in all settings — practice shares the $...$/$$...$$ authoring contract.
-	const segments: Array<{ path: string; shared: boolean; file: string }> = agent === "practice" || agent === "build" ? [] : [
+	const segments: Array<{ path: string; shared: boolean; file: string }> = agent === "practice" || agent === "build" || agent === "mentor" ? [] : [
 		{ path: "system-prompt.md", shared: true, file: PATHS.teacherPrompt },
 	];
 	const dir = path.join(PROMPTS_DIR, agent);
@@ -91,7 +103,7 @@ export function listSourceSegments(agent: PromptAgent): Array<{ path: string; sh
 	const sharedDir = path.join(PROMPTS_DIR, "shared");
 	if (fs.existsSync(sharedDir)) {
 		// The practice allowlist (owner, 2026-10-04 late): formatting only.
-		const allow = agent === "practice" ? PRACTICE_SHARED_FRAGMENTS : agent === "build" ? BUILD_SHARED_FRAGMENTS : null;
+		const allow = agent === "practice" ? PRACTICE_SHARED_FRAGMENTS : agent === "build" ? BUILD_SHARED_FRAGMENTS : agent === "planner" ? PLANNER_SHARED_FRAGMENTS : agent === "mentor" ? MENTOR_SHARED_FRAGMENTS : null;
 		const sharedFragments = fs
 			.readdirSync(sharedDir)
 			.filter((f) => FRAGMENT_RE.test(f) && (allow === null || allow.includes(f)))
@@ -134,7 +146,7 @@ export function effectivePromptSegments(
 /** Every known segment path across both agents (route validation). */
 export function allSegmentPaths(): string[] {
 	const paths = new Set<string>();
-	for (const agent of ["prober", "teacher", "practice", "build"] as const) {
+	for (const agent of ["prober", "planner", "teacher", "practice", "build", "mentor"] as const) {
 		for (const segment of listSourceSegments(agent)) paths.add(segment.path);
 	}
 	return [...paths].sort();

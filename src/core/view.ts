@@ -126,11 +126,12 @@ function applyResult(part: LhViewPart, result: ToolResultMessage): void {
 	}
 }
 
-/** Does this assistant group carry a successful plan_init (the splice target)? */
+/** Does this assistant group carry a successful plan tool call — plan_batch,
+ *  or plan_init in older records (the splice target)? */
 function lastSuccessfulPlanInit(parts: LhViewPart[]): number {
 	let idx = -1;
 	parts.forEach((p, i) => {
-		if (p.type !== "tool-plan_init") return;
+		if (p.type !== "tool-plan_batch" && p.type !== "tool-plan_init") return;
 		const ok = (p.output as { ok?: unknown } | undefined)?.ok;
 		if (ok === true) idx = i;
 	});
@@ -538,5 +539,31 @@ function projectMarker(marker: LhMarkerMessage, out: LhViewMessage[]): void {
 			group.parts.splice(idx + 1, 0, { type: "data-plan-block", id: marker.id, data: block });
 			return;
 		}
+		case "plan-update": {
+			// The coach changed the plan (coach-planner design §4.2): a
+			// NON-RENDERED part carrying the full tree, so the plan map's
+			// latestTree sees it in transcript order. It rides the preceding
+			// message (no group split); with nothing before it, a data-only
+			// message of its own (renders nothing).
+			const part: LhViewPart = { type: "data-plan-update", id: `pu_${marker.id}`, data: marker.details };
+			const last = out[out.length - 1];
+			if (last) last.parts.push(part);
+			else out.push({ id: marker.id, role: "user", parts: [part] });
+			return;
+		}
+		case "probe-edge": {
+			// The probe's result for the learner (the probe redesign): a
+			// user-side card of its own at the marker's position, carrying
+			// the edge report (as build-return is projected).
+			const { report } = (marker.details ?? {}) as { report?: unknown };
+			out.push({ id: marker.id, role: "user", parts: [{ type: "data-probe-edge", id: `pe_${marker.id}`, data: { report } }] });
+			return;
+		}
+		case "node-handoff":
+		case "planner-wake":
+		case "coach-card":
+			// Model-facing context (coach-planner design §4.5–§4.7): never
+			// shown to the learner.
+			return;
 	}
 }

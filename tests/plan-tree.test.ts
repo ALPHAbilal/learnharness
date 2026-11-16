@@ -4,20 +4,16 @@
  *  1. Pure ops (src/core/plan-tree.ts): every validation error path and
  *     version semantics (structure only — progress derives from the
  *     transcript, docs/archive/probe-teach-split.md §3).
- *  2. Tool execute (src/agent/tools/plan.ts): against the REAL chat store —
- *     plan_init happy path, the re-callable rewrite, error results.
+ *  2. The mermaid subset parser (the plan_init era's input format; the
+ *     plan_batch tool is pinned in tests/plan-batch.test.ts).
  */
 
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { after, describe, it } from "node:test";
-import { derivePlanStatuses, derivedNodeStatus, type PlanTree, type PlanToolResult } from "../src/core/contracts.ts";
-import { createTree, emptyTree, PlanTreeError } from "../src/core/plan-tree.ts";
-import { planTools } from "../src/agent/tools/plan.ts";
+import { describe, it } from "node:test";
+import { derivePlanStatuses, derivedNodeStatus, type PlanTree } from "../src/core/contracts.ts";
+import { createTree, emptyTree, insertNodesBefore, mergePlanBatch, PlanTreeError } from "../src/core/plan-tree.ts";
+import type { PlanArrow, PlanNode } from "../src/core/contracts.ts";
 import { parseMermaidPlan } from "../src/agent/tools/mermaid-plan.ts";
-import { chatStore } from "../src/store/chats.ts";
-import { PATHS } from "../config.ts";
 
 const N = (id: string, title = id, summary?: string) => ({ id, title, ...(summary ? { summary } : {}) });
 const E = (from: string, to: string) => ({ from, to });
@@ -84,119 +80,171 @@ describe("plan-tree pure ops", () => {
 
 });
 
-// ─── 2. tool execute against the real store ─────────────────────────────────
+// ─── facts, arrows, batches (coach-planner design §4.2) ─────────────────────
 
-const createdChats: string[] = [];
-after(() => {
-	for (const id of createdChats) {
-		try {
-			fs.unlinkSync(path.join(PATHS.chats, `${id}.json`));
-		} catch {
-			/* already gone */
-		}
-	}
+/** A node with facts: each fact id f maps to graph id `n_<f>`. */
+const NF = (id: string, factIds: string[], over: Partial<PlanNode> = {}): PlanNode => ({
+	id,
+	title: id.toUpperCase(),
+	facts: factIds.map((f) => ({ id: f, graphId: `n_${f}`, statement: `Statement ${f}` })),
+	...over,
+});
+const A = (premises: string[], conclusion: string): PlanArrow => ({ premises, conclusion });
+
+describe("plan-tree facts and arrows", () => {
+	it("an old tree without facts or arrows validates exactly as before (no arrows key added)", () => {
+		const t = createTree([N("a", "A", "sum"), N("b", "B")], [E("a", "b")]);
+		assert.deepEqual(t, {
+			nodes: [{ id: "a", title: "A", summary: "sum" }, { id: "b", title: "B" }],
+			edges: [E("a", "b")],
+			version: 1,
+		});
+		assert.ok(!("arrows" in t));
+	});
+
+	it("accepts facts and arrows, and deep-copies them", () => {
+		const nodes = [NF("a", ["f1", "f2"]), NF("b", ["f3"])];
+		const arrows = [A(["f1", "f2"], "f3")];
+		const t = createTree(nodes, [E("a", "b")], arrows);
+		assert.deepEqual(t.arrows, arrows);
+		assert.deepEqual(t.nodes[0]!.facts, nodes[0]!.facts);
+		assert.notEqual(t.nodes[0]!.facts, nodes[0]!.facts, "facts list copied");
+		assert.notEqual(t.nodes[0]!.facts![0], nodes[0]!.facts![0], "fact objects copied");
+		assert.notEqual(t.arrows![0], arrows[0], "arrows copied");
+	});
+
+	it("rejects fact ids repeated across the tree or within a node, naming them", () => {
+		assertReject(() => createTree([NF("a", ["f1"]), NF("b", ["f1"])], []), /Duplicate fact id "f1" — it is on node "a" and on node "b"/);
+		assertReject(() => createTree([NF("a", ["f1", "f1"])], []), /Duplicate fact id "f1" on node "a"/);
+	});
+
+	it("rejects malformed facts", () => {
+		assertReject(() => createTree([{ id: "a", title: "A", facts: [{ id: "", graphId: "n_x", statement: "s" }] }], []), /fact of node "a" needs a non-empty `id`/);
+		assertReject(() => createTree([{ id: "a", title: "A", facts: [{ id: "f1", graphId: "", statement: "s" }] }], []), /Fact "f1" of node "a" needs a non-empty `graphId`/);
+		assertReject(() => createTree([{ id: "a", title: "A", facts: [{ id: "f1", graphId: "n_x", statement: " " }] }], []), /Fact "f1" of node "a" needs a non-empty `statement`/);
+	});
+
+	it("rejects arrows without premises, with unknown endpoints, or concluding a premise", () => {
+		const nodes = [NF("a", ["f1", "f2"])];
+		assertReject(() => createTree(nodes, [], [A([], "f2")]), /needs at least one premise/);
+		assertReject(() => createTree(nodes, [], [A(["ghost"], "f2")]), /unknown fact id "ghost"/);
+		assertReject(() => createTree(nodes, [], [A(["f1"], "ghost")]), /unknown fact id "ghost"/);
+		assertReject(() => createTree(nodes, [], [A(["f1", "f2"], "f2")]), /lists its conclusion "f2" among its premises/);
+	});
+
+	it("rejects cycles in the arrow relation, naming the arrow that closes it", () => {
+		const nodes = [NF("a", ["f1", "f2", "f3"])];
+		assertReject(() => createTree(nodes, [], [A(["f1"], "f2"), A(["f2"], "f3"), A(["f3"], "f1")]), /Arrow \["f3"\] → "f1" would create a cycle/);
+		// A diamond is fine: f1 → f2, f1 → f3, [f2, f3] → … not a cycle.
+		const ok = createTree([NF("a", ["f1", "f2", "f3", "f4"])], [], [A(["f1"], "f2"), A(["f1"], "f3"), A(["f2", "f3"], "f4")]);
+		assert.equal(ok.arrows!.length, 3);
+	});
 });
 
-/** Call a plan tool's execute directly with a minimal execution-options object. */
-async function exec(tools: ReturnType<typeof planTools>, name: string, input: unknown): Promise<PlanToolResult> {
-	const t = tools[name]!;
-	assert.ok(typeof t.execute === "function", `${name} must be a server-side tool with execute`);
-	return t.execute("test", input).then((r) => r.details as PlanToolResult);
-}
+describe("mergePlanBatch (append semantics)", () => {
+	it("first batch onto no tree: version 1, origin from opts, batch 1", () => {
+		const t = mergePlanBatch(undefined, { nodes: [NF("a", ["f1"]), NF("b", ["f2"])], edges: [E("a", "b")], arrows: [A(["f1"], "f2")] }, { origin: "planner" });
+		assert.equal(t.version, 1);
+		assert.deepEqual(t.nodes.map((n) => [n.id, n.origin, n.batch]), [["a", "planner", 1], ["b", "planner", 1]]);
+		assert.deepEqual(t.edges, [E("a", "b")]);
+		assert.deepEqual(t.arrows, [A(["f1"], "f2")]);
+	});
 
-function newChat(title: string): string {
-	const chat = chatStore.createChat(title);
-	createdChats.push(chat.id);
-	return chat.id;
-}
+	it("appends a later batch: existing nodes untouched, batch = highest + 1, version increments", () => {
+		const first = mergePlanBatch(undefined, { nodes: [NF("a", ["f1"])], edges: [] }, { origin: "planner" });
+		const second = mergePlanBatch(first, { nodes: [NF("b", ["f2"])], edges: [E("a", "b")], arrows: [A(["f1"], "f2")] }, { origin: "planner" });
+		assert.equal(second.version, 2);
+		assert.deepEqual(second.nodes[0], first.nodes[0], "the existing node is preserved verbatim");
+		assert.equal(second.nodes[1]!.batch, 2);
+		const third = mergePlanBatch(second, { nodes: [NF("c", [], { batch: 99, origin: "planner" })], edges: [E("b", "c")] }, { origin: "coach" });
+		assert.equal(third.version, 3);
+		assert.equal(third.nodes[2]!.batch, 3, "the batch number is assigned, never taken from the input");
+		assert.equal(third.nodes[2]!.origin, "coach", "origin comes from opts");
+		assert.deepEqual(third.arrows, [A(["f1"], "f2")], "existing arrows survive a batch without arrows");
+	});
 
-describe("plan_init — the author-once mermaid tool (execute against the real store)", () => {
-	it("parses a mermaid block, builds the tree, persists, returns the full tree", async () => {
-		const chatId = newChat("Plan: init");
-		const tools = planTools({ chatId, chatStore });
+	it("nodes without a batch count as batch 0 (an old plan_init tree)", () => {
+		const old = createTree([N("a"), N("b")], [E("a", "b")]);
+		const t = mergePlanBatch(old, { nodes: [NF("c", ["f1"])], edges: [E("b", "c")] }, { origin: "planner" });
+		assert.equal(t.nodes[2]!.batch, 1);
+		assert.equal(t.version, 2);
+		assert.deepEqual(t.nodes.slice(0, 2), old.nodes, "old nodes keep their shape (no batch/origin added)");
+	});
 
-		const res = await exec(tools, "plan_init", {
-			mermaid: "graph TD\n  primitives[Number primitives] --> operators[Arithmetic operators]\n  operators --> expressions[Evaluating expressions]\n  detour[Side quest]\n",
-		});
-		assert.equal(res.ok, true);
-		assert.equal(res.error, undefined);
-		const tree = res.tree!;
-		assert.equal(tree.version, 1);
-		assert.deepEqual(
-			tree.nodes.map((n) => n.id),
-			["primitives", "operators", "expressions", "detour"],
+	it("unions edges and arrows without duplicates (arrow premises compare as a set)", () => {
+		const first = mergePlanBatch(undefined, { nodes: [NF("a", ["f1", "f2"]), NF("b", ["f3"])], edges: [E("a", "b")], arrows: [A(["f1", "f2"], "f3")] }, { origin: "planner" });
+		const t = mergePlanBatch(
+			first,
+			{ nodes: [NF("c", ["f4"])], edges: [E("a", "b"), E("b", "c"), E("b", "c")], arrows: [A(["f2", "f1"], "f3"), A(["f3"], "f4")] },
+			{ origin: "planner" },
 		);
-		assert.deepEqual(tree.edges, [
-			{ from: "primitives", to: "operators" },
-			{ from: "operators", to: "expressions" },
-		]);
-
-		const saved = chatStore.getChat(chatId)!.tree;
-		assert.ok(saved, "tree persisted to the chat record");
-		assert.deepEqual(saved, tree);
+		assert.deepEqual(t.edges, [E("a", "b"), E("b", "c")]);
+		assert.deepEqual(t.arrows, [A(["f1", "f2"], "f3"), A(["f3"], "f4")]);
 	});
 
-	it("RE-CALLABLE: a rewrite replaces the tree wholesale (the mutation tools are gone)", async () => {
-		const chatId = newChat("Plan: rewrite");
-		const tools = planTools({ chatId, chatStore });
-		await exec(tools, "plan_init", {
-			mermaid: "graph TD\n  a[First attempt] --> b[Early shape]\n",
-		});
+	it("rejects a batch node whose id already exists, naming it", () => {
+		const first = mergePlanBatch(undefined, { nodes: [NF("a", ["f1"])], edges: [] }, { origin: "planner" });
+		assertReject(() => mergePlanBatch(first, { nodes: [NF("a", ["f9"])], edges: [] }, { origin: "planner" }), /Node "a" already exists in the plan/);
+	});
 
-		const res = await exec(tools, "plan_init", {
-			mermaid: "graph TD\n  truth[The core truth]\n  goal[The sink] --> truth\n",
-		});
-		assert.equal(res.ok, true, "re-init is the sanctioned rewrite path now");
-		assert.deepEqual(
-			res.tree!.nodes.map((n) => n.id),
-			["truth", "goal"],
+	it("rejects a batch fact id that clashes with an existing fact", () => {
+		const first = mergePlanBatch(undefined, { nodes: [NF("a", ["f1"])], edges: [] }, { origin: "planner" });
+		assertReject(() => mergePlanBatch(first, { nodes: [NF("b", ["f1"])], edges: [] }, { origin: "planner" }), /Duplicate fact id "f1" — it is on node "a" and on node "b"/);
+	});
+
+	it("validates the merged result like createTree (edges, arrows, cycles)", () => {
+		const first = mergePlanBatch(undefined, { nodes: [NF("a", ["f1"]), NF("b", ["f2"])], edges: [E("a", "b")], arrows: [A(["f1"], "f2")] }, { origin: "planner" });
+		assertReject(() => mergePlanBatch(first, { nodes: [NF("c", [])], edges: [E("c", "ghost")] }, { origin: "planner" }), /unknown node id "ghost"/);
+		assertReject(() => mergePlanBatch(first, { nodes: [NF("c", [])], edges: [E("b", "a")] }, { origin: "planner" }), /cycle/);
+		assertReject(() => mergePlanBatch(first, { nodes: [NF("c", ["f3"])], edges: [], arrows: [A(["f2"], "f1")] }, { origin: "planner" }), /would create a cycle/);
+		assertReject(() => mergePlanBatch(first, { nodes: [NF("c", ["f3"])], edges: [], arrows: [A(["ghost"], "f3")] }, { origin: "planner" }), /unknown fact id "ghost"/);
+	});
+
+	it("never mutates the existing tree or the batch", () => {
+		const first = mergePlanBatch(undefined, { nodes: [NF("a", ["f1"])], edges: [] }, { origin: "planner" });
+		const snapshot = JSON.stringify(first);
+		const batch = { nodes: [NF("b", ["f2"])], edges: [E("a", "b")], arrows: [A(["f1"], "f2")] };
+		const batchSnapshot = JSON.stringify(batch);
+		mergePlanBatch(first, batch, { origin: "planner" });
+		assert.equal(JSON.stringify(first), snapshot);
+		assert.equal(JSON.stringify(batch), batchSnapshot);
+	});
+});
+
+describe("insertNodesBefore (coach insertions)", () => {
+	const base = () =>
+		mergePlanBatch(
+			mergePlanBatch(undefined, { nodes: [NF("a", ["f1"])], edges: [] }, { origin: "planner" }),
+			{ nodes: [NF("b", ["f2"]), NF("c", ["f3"])], edges: [E("a", "b"), E("b", "c")], arrows: [A(["f1"], "f2")] },
+			{ origin: "planner" },
 		);
-		assert.deepEqual(
-			chatStore.getChat(chatId)!.tree!.nodes.map((n) => n.id),
-			["truth", "goal"],
-			"rewrite persisted",
-		);
+
+	it("adds the nodes as prerequisites of the target, origin coach, the target's batch, placed before it", () => {
+		const tree = base();
+		const t = insertNodesBefore(tree, "c", [NF("x", ["f9"], { batch: 7, origin: "planner" }), NF("y", [])]);
+		assert.equal(t.version, tree.version + 1);
+		assert.deepEqual(t.nodes.map((n) => n.id), ["a", "b", "x", "y", "c"]);
+		const x = t.nodes.find((n) => n.id === "x")!;
+		assert.equal(x.origin, "coach");
+		assert.equal(x.batch, 2, "the target's batch");
+		assert.deepEqual(t.edges, [E("a", "b"), E("b", "c"), E("x", "c"), E("y", "c")]);
+		assert.deepEqual(t.arrows, tree.arrows, "arrows carried over");
+		assert.deepEqual(t.nodes.find((n) => n.id === "c"), tree.nodes.find((n) => n.id === "c"), "the target is untouched");
 	});
 
-	it("parse failures collect EVERY problem with line numbers and persist nothing", async () => {
-		const chatId = newChat("Plan: bad parse");
-		const tools = planTools({ chatId, chatStore });
-
-		const res = await exec(tools, "plan_init", {
-			mermaid: "graph TD\n  Foo Bar[x] --> y\n  a --> a\n  subgraph hi\n",
-		});
-		assert.equal(res.ok, false);
-		const err = res.error!;
-		assert.match(err, /line 2/);
-		assert.match(err, /line 3/);
-		assert.match(err, /line 4/);
-		// Context diet (2026-10-09): failures carry just the error — no tree echo.
-		assert.equal(res.tree, undefined);
-		assert.equal(chatStore.getChat(chatId)!.tree, undefined, "nothing persisted on failure");
+	it("a target without a batch gives the new nodes no batch", () => {
+		const old = createTree([N("a"), N("b")], [E("a", "b")]);
+		const t = insertNodesBefore(old, "b", [N("x")]);
+		const x = t.nodes.find((n) => n.id === "x")!;
+		assert.equal(x.origin, "coach");
+		assert.ok(!("batch" in x));
+		assert.equal(t.version, 2);
 	});
 
-	it("structural failures (cycle) become ok:false without persisting", async () => {
-		const chatId = newChat("Plan: cycle");
-		const tools = planTools({ chatId, chatStore });
-		const res = await exec(tools, "plan_init", {
-			mermaid: "graph TD\n  a[A] --> b[B]\n  b --> a\n",
-		});
-		assert.equal(res.ok, false);
-		assert.match(res.error!, /cycle/);
-		assert.equal(res.tree, undefined, "no tree echo on failure (context diet, 2026-10-09)");
-	});
-
-	it("only plan_init exists — the seven mutation/tracking tools are gone by design", () => {
-		const tools = planTools({ chatId: "chat_x", chatStore });
-		assert.deepEqual(Object.keys(tools), ["plan_init"]);
-	});
-
-	it("unknown chat returns ok:false with the empty tree", async () => {
-		const tools = planTools({ chatId: "chat_nonexistent", chatStore });
-		const res = await exec(tools, "plan_init", { mermaid: "graph TD\n  a[A]\n" });
-		assert.equal(res.ok, false);
-		assert.match(res.error!, /Chat not found/);
-		assert.equal(res.tree, undefined);
+	it("rejects an unknown target, an existing node id, and clashing fact ids", () => {
+		assertReject(() => insertNodesBefore(base(), "ghost", [N("x")]), /unknown node id "ghost"/);
+		assertReject(() => insertNodesBefore(base(), "c", [N("a")]), /Node "a" already exists in the plan/);
+		assertReject(() => insertNodesBefore(base(), "c", [NF("x", ["f1"])]), /Duplicate fact id "f1"/);
 	});
 });
 

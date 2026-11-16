@@ -155,6 +155,31 @@ export interface CoverageEntry {
 	foldedAt: string;
 }
 
+/** What kind of question produced an evidence event. */
+export type EvidenceSource = "probe" | "quiz" | "code" | "recall" | "practice";
+
+/** evidence.jsonl line — one graded learner answer about one fact
+ *  (coach-planner design §4.3). Append-only; persists across sessions.
+ *  The knowledge number is a pure fold over these (core/knowledge.ts),
+ *  never stored. Additive file: no graph format version bump. */
+export interface EvidenceEvent {
+	/** The graph node id ("n_…") the answer is evidence about. */
+	nodeId: string;
+	chatId: string;
+	/** The answer's message id; "" when unknown. */
+	messageId: string;
+	/** ISO timestamp of the answer. */
+	at: string;
+	source: EvidenceSource;
+	correct: boolean;
+	/** The learner answered "I don't know" (counts as wrong). */
+	dontKnow?: boolean;
+	/** Probability of a right answer without knowing the fact, in (0,1). */
+	guess: number;
+	/** The learner's stated confidence, 0–100. */
+	confidence?: number;
+}
+
 /**
  * Store format (src/store/graph.ts): JSONL ledgers at config.LEDGER_FILES
  * (nodes/chains/sessions), all append-only. Edges are NEVER stored — the
@@ -170,6 +195,9 @@ export interface CoverageEntry {
  *   chains.jsonl   one line per chain ASSERTION; readers merge by
  *                  (premises, conclusion), unioning provenance — the
  *                  first line's arg_ id is the chain's identity.
+ *   evidence.jsonl one EvidenceEvent per graded answer about a fact
+ *                  (coach-planner design §4.3); a missing file reads as
+ *                  empty.
  *
  * The derived graph is rebuilt by reading the ledgers — store events,
  * derive state. sessions.jsonl is the extraction checkpoint: which chats
@@ -312,6 +340,10 @@ export interface GraphSnapshot {
 	fileSources: Record<string, string>;
 	/** nodeId → chatIds that touched the node (click-through provenance). */
 	nodeSessions: Record<string, string[]>;
+	/** nodeId → the learner's knowledge number (probability the fact is
+	 *  known) and the count of graded answers behind it, for live
+	 *  propositions with at least one evidence event (core/knowledge.ts). */
+	knowledge: Record<string, { p: number; attempts: number }>;
 	/** Birth-session communities (core/session-clusters.ts: each
 	 * proposition joins the cluster of the session that birthed it —
 	 * session provenance, no Louvain, no embeddings), MIN_CLUSTER_SIZE

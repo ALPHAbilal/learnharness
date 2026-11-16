@@ -51,10 +51,14 @@ are admitted atomically from one per-turn contribution snapshot. Never invoke a 
 again to reconstruct authority.
 
 Native parameters are `{question: string, payload: Q}` for probe and
-`{type: "predict" | "check", nodeId: string, question: string, payload: Q}` for teach.
+`{type: "predict" | "check", nodeId: string, facts?: string[], question: string, payload: Q}` for teach.
 Common fields cannot collide with payload fields. `question` is non-whitespace
 learner-visible Markdown preserved as authored, providing a safe teaser/fallback.
 Teach node IDs must be applicable live plan nodes; existing predict/check pacing applies.
+Once the teacher is on a plan node, `nodeId` must be that current node. `facts` lists the
+ids of the plan facts the question tests; it is optional in the schema (saved snapshots
+without it stay readable) but the host requires it at pose time whenever the node has
+facts, and every id must be a fact of that node. A bare string is accepted as one id.
 
 Optional side-effect-free synchronous refinements receive immutable context:
 `validateQuestion({chatId,variant,contractVersion,input})` and
@@ -139,6 +143,8 @@ Compatibility is explicit:
 Optional `gradeAnswer(context)` runs **after validation, before save**, receiving immutable
 historical input/answer and a host signal. Return any finite JSON, not a host envelope.
 There is no host result schema, correctness/status enum, scoring or automatic badge UI.
+One exception exists for learner evidence: the host reads the core Coding questions
+plugin's own `status` (`"passed"`/`"failed"`) to record evidence about the tagged facts.
 
 The host answer envelope contains `kind: "plugin-question"`, `questionId`, `pluginId`,
 `typeId`, `contractVersion`, exact `answer`, applicable `thinking`/`readingThinking`,

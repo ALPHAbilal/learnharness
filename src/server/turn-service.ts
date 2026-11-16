@@ -20,7 +20,7 @@ import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import type { LhMessage } from "../core/native-messages.ts";
 import { newMessageId } from "../core/native-messages.ts";
 import { QUESTION_TOOLS } from "../core/pending.ts";
-import { planBlocksFor } from "../core/plan-blocks.ts";
+import { planBlocksFor, probeEdgesFor } from "../core/plan-blocks.ts";
 import { coverageOf } from "../core/coverage.ts";
 import type { ChatStore, GraphStore } from "../core/ports.ts";
 import type { ExtractionPipeline } from "../agent/subagents/extraction.ts";
@@ -50,8 +50,11 @@ export class TurnPersistenceError extends Error {
  *   unanswered call; the learner's answer arrives as the real tool
  *   result). Errored question calls DO persist — the model's retry
  *   context.
- * - Plan blocks: one frozen snapshot per successful plan_init call,
+ * - Plan blocks: one frozen snapshot per successful plan tool call
+ *   (plan_batch; plan_init in older records),
  *   idempotent (persist replays are safe).
+ * - The probe edge: the learner's probe-edge marker after the successful
+ *   probe_done (its result carries the report), idempotent.
  *
  * Returns the stamped new messages (usage provenance reads them). Throws
  * TurnPersistenceError on failure so the runner can report it before DONE.
@@ -84,7 +87,8 @@ export function persistTurn(
 			...record.messages,
 			...stamped,
 		]);
-		chatStore.saveMessages(chatId, [...record.messages, ...stamped, ...blocks]);
+		const edges = probeEdgesFor(record.messages, stamped);
+		chatStore.saveMessages(chatId, [...record.messages, ...stamped, ...blocks, ...edges]);
 		return stamped;
 	} catch (err) {
 		console.error(`[chat ${chatId}] persist failed:`, err, { isAborted });
